@@ -3,27 +3,28 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#080808">
   <title>Hustle Empire</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="/style.css">
 </head>
+
 <body>
+
   <section id="auth" class="auth-screen">
     <div class="auth-card">
       <div class="logo">HUSTLE EMPIRE</div>
       <div class="tagline">Build. Upgrade. Rebirth. Dominate.</div>
-      <div class="auth-help">
-        Username: 3–24 characters, letters, numbers, or _
-        <br>
-        Password: at least 8 characters
-      </div>
+
       <div class="auth-tabs">
-        <button id="registerTab" class="active" onclick="setMode('register')">
+        <button id="registerTab" class="active" type="button">
           Create Account
         </button>
-        <button id="loginTab" onclick="setMode('login')">
+
+        <button id="loginTab" type="button">
           Log In
         </button>
       </div>
+
       <div class="field">
         <label for="u">Username</label>
         <input
@@ -36,6 +37,7 @@
           placeholder="Enter username"
         >
       </div>
+
       <div class="field">
         <label for="p">Password</label>
         <input
@@ -46,91 +48,111 @@
           placeholder="Enter password"
         >
       </div>
-      <button id="authButton" class="primary-btn" onclick="register()">
+
+      <button id="authButton" class="primary-btn" type="button">
         Create Account
       </button>
+
       <div id="msg" class="message"></div>
+
+      <div class="auth-help">
+        Username: 3–24 characters, letters, numbers, or _
+        <br>
+        Password: at least 8 characters
+      </div>
     </div>
   </section>
-  <main id="game" class="game-screen hidden">
-    <header class="topbar">
+
+  <section id="game" style="display:none;">
+    <header class="game-header">
       <div>
-        <div class="logo small">HUSTLE EMPIRE</div>
+        <div class="logo">HUSTLE EMPIRE</div>
         <div id="playerName"></div>
       </div>
-      <button class="logout-btn" onclick="logout()">Log Out</button>
+
+      <button id="logoutButton" type="button">
+        Log Out
+      </button>
     </header>
-    <section class="stats-grid">
-      <div class="stat-card">
-        <span>Cash</span>
-        <strong id="cash">$0</strong>
+
+    <main id="gameContent">
+      <div class="game-card">
+        <h2>Your Empire</h2>
+
+        <div class="stats">
+          <div>
+            <span>Cash</span>
+            <strong id="cash">$500.00</strong>
+          </div>
+
+          <div>
+            <span>Lifetime Cash</span>
+            <strong id="lifetimeCash">$500.00</strong>
+          </div>
+
+          <div>
+            <span>Rebirths</span>
+            <strong id="rebirths">0</strong>
+          </div>
+        </div>
+
+        <button id="workButton" class="primary-btn" type="button">
+          Hustle
+        </button>
+
+        <div id="gameMsg" class="message"></div>
       </div>
-      <div class="stat-card">
-        <span>Level</span>
-        <strong id="level">1</strong>
-      </div>
-      <div class="stat-card">
-        <span>Rebirths</span>
-        <strong id="rebirths">0</strong>
-      </div>
-      <div class="stat-card">
-        <span>Lifetime Cash</span>
-        <strong id="lifetimeCash">$0</strong>
-      </div>
-    </section>
-    <section class="game-card">
-      <h2>Empire</h2>
-      <p>Build your empire and grow your fortune.</p>
-      <button class="primary-btn" onclick="work()">
-        Hustle for Cash
-      </button>
-      <button class="secondary-btn" onclick="upgrade()">
-        Upgrade Empire
-      </button>
-      <button class="danger-btn" onclick="rebirth()">
-        Rebirth
-      </button>
-      <div id="gameMsg" class="message"></div>
-    </section>
-    <section class="game-card">
-      <h2>Leaderboard</h2>
-      <div id="leaderboard"></div>
-    </section>
-  </main>
+    </main>
+  </section>
+
+  <script src="/app.js"></script>
+
   <script>
-    function setMode(mode) {
+    document.addEventListener("DOMContentLoaded", function () {
       const registerTab = document.getElementById("registerTab");
       const loginTab = document.getElementById("loginTab");
       const authButton = document.getElementById("authButton");
-      const password = document.getElementById("p");
-      if (mode === "login") {
-        registerTab.classList.remove("active");
-        loginTab.classList.add("active");
-        authButton.textContent = "Log In";
-        authButton.onclick = login;
-        password.setAttribute("autocomplete", "current-password");
-      } else {
-        loginTab.classList.remove("active");
-        registerTab.classList.add("active");
-        authButton.textContent = "Create Account";
-        authButton.onclick = register;
-        password.setAttribute("autocomplete", "new-password");
+
+      function setMode(mode) {
+        const isLogin = mode === "login";
+
+        registerTab.classList.toggle("active", !isLogin);
+        loginTab.classList.toggle("active", isLogin);
+
+        authButton.textContent = isLogin
+          ? "Log In"
+          : "Create Account";
+
+        authButton.onclick = isLogin
+          ? window.login
+          : window.register;
+
+        const password = document.getElementById("p");
+
+        password.autocomplete = isLogin
+          ? "current-password"
+          : "new-password";
+
+        document.getElementById("msg").textContent = "";
       }
-      document.getElementById("msg").textContent = "";
-    }
-    function logout() {
-      localStorage.removeItem("hustle_token");
-      localStorage.removeItem("hustle_user");
-      location.reload();
-    }
-    const originalRender = window.render;
-    window.addEventListener("load", () => {
+
+      registerTab.addEventListener("click", function () {
+        setMode("register");
+      });
+
+      loginTab.addEventListener("click", function () {
+        setMode("login");
+      });
+
+      document.getElementById("logoutButton").addEventListener("click", function () {
+        if (typeof window.logout === "function") {
+          window.logout();
+        }
+      });
+
       setMode("register");
-      if (typeof window.render === "function") {
-        window.render();
-      }
     });
   </script>
-  <script src="app.js"></script>
+
 </body>
 </html>
