@@ -28,6 +28,112 @@ const SESSION_MS =
 
 const DAILY_COOLDOWN_MS = 86400000;
 
+/*
+  RATE LIMITING
+  -------------
+  Lightweight in-memory protection.
+
+  This protects the public API from basic:
+  - login brute force
+  - registration spam
+  - admin endpoint abuse
+
+  Entries automatically expire.
+*/
+const rateLimits = new Map();
+
+const RATE_LIMITS = {
+  login: {
+    windowMs: 15 * 60 * 1000,
+    max: 10
+  },
+
+  register: {
+    windowMs: 15 * 60 * 1000,
+    max: 10
+  },
+
+  admin: {
+    windowMs: 15 * 60 * 1000,
+    max: 20
+  }
+};
+
+function getClientIp(req) {
+  const forwarded = req.headers["x-forwarded-for"];
+
+  if (typeof forwarded === "string" && forwarded.length) {
+    return forwarded.split(",")[0].trim();
+  }
+
+  return req.socket?.remoteAddress || "unknown";
+}
+
+function rateLimit(type) {
+  const config = RATE_LIMITS[type];
+
+  return (req, res, next) => {
+    const now = Date.now();
+    const ip = getClientIp(req);
+    const key = `${type}:${ip}`;
+
+    let record = rateLimits.get(key);
+
+    if (
+      !record ||
+      now - record.startedAt >= config.windowMs
+    ) {
+      record = {
+        startedAt: now,
+        count: 0
+      };
+    }
+
+    record.count += 1;
+    rateLimits.set(key, record);
+
+    if (record.count > config.max) {
+      const retryAfter = Math.ceil(
+        (config.windowMs -
+          (now - record.startedAt)) /
+          1000
+      );
+
+      res.setHeader(
+        "Retry-After",
+        String(retryAfter)
+      );
+
+      return res.status(429).json({
+        error:
+          "Too many requests. Please try again later."
+      });
+    }
+
+    next();
+  };
+}
+
+/*
+  Periodically remove expired rate-limit records
+  so memory does not grow forever.
+*/
+setInterval(() => {
+  const now = Date.now();
+
+  for (const [key, record] of rateLimits) {
+    const type = key.split(":")[0];
+    const config = RATE_LIMITS[type];
+
+    if (
+      !config ||
+      now - record.startedAt >= config.windowMs
+    ) {
+      rateLimits.delete(key);
+    }
+  }
+}, 5 * 60 * 1000).unref();
+
 const BUSINESSES = [
   {
     id: "street-hustle",
@@ -117,9 +223,6 @@ async function init() {
     );
   `);
 
-  /*
-    Upgrade legacy players table.
-  */
   const columns = [
     ["password_hash", "TEXT DEFAULT ''"],
     ["cash", "NUMERIC(30,2) NOT NULL DEFAULT 500"],
@@ -152,10 +255,6 @@ async function init() {
     }
   }
 
-  /*
-    Legacy databases may contain email/password columns
-    that are no longer required by Hustle Empire.
-  */
   const emailCheck = await pool.query(
     `
       SELECT EXISTS (
@@ -190,7 +289,9 @@ async function init() {
     );
   }
 
-  console.log("Database initialization and migration complete");
+  console.log(
+    "Database initialization and migration complete"
+  );
 }
 
 /*
@@ -198,8 +299,8 @@ async function init() {
   -----------------------------
   Keeps ONLY hustleking123.
 
-  A maintenance flag prevents this from running
-  again on future server restarts.
+  IMPORTANT:
+  The maintenance flag means this happens only once.
 */
 async function cleanupTestAccountsOnce() {
   const client = await pool.connect();
@@ -226,9 +327,6 @@ async function cleanupTestAccountsOnce() {
       return;
     }
 
-    /*
-      Delete dependent records first.
-    */
     await client.query(
       `
         DELETE FROM ledger
@@ -269,10 +367,6 @@ async function cleanupTestAccountsOnce() {
       `
     );
 
-    /*
-      Mark cleanup complete so future restarts
-      cannot delete newly-created players.
-    */
     await client.query(
       `
         INSERT INTO maintenance_flags(name)
@@ -315,53 +409,79 @@ function passwordHash(
   salt = crypto.randomBytes(16).toString("hex")
 ) {
   return new Promise((resolve, reject) => {
-    crypto.scrypt(password, salt, 64, (error, key) => {
-      if (error) {
-        return reject(error);
-      }
+    crypto.scrypt(
+      password,
+      salt,
+      64,
+      (error, key) => {
+        if (error) {
+          return reject(error);
+        }
 
-      resolve(
-        `${salt}:${key.toString("hex")}`
-      );
-    });
+        resolve(
+          `${salt}:${key.toString("hex")}`
+        );
+      }
+    );
   });
 }
 
 function verifyPassword(password, stored) {
-  if (!stored || !stored.includes(":")) {
+  if (
+    !stored ||
+    !stored.includes(":")
+  ) {
     return Promise.resolve(false);
   }
 
-  const [salt, hex] = stored.split(":");
+  const [salt, hex] =
+    stored.split(":");
 
   if (!salt || !hex) {
     return Promise.resolve(false);
   }
 
   return new Promise((resolve, reject) => {
-    crypto.scrypt(password, salt, 64, (error, key) => {
-      if (error) {
-        return reject(error);
+    crypto.scrypt(
+      password,
+      salt,
+      64,
+      (error, key) => {
+        if (error) {
+          return reject(error);
+        }
+
+        const a = Buffer.from(
+          hex,
+          "hex"
+        );
+
+        const b = key;
+
+        resolve(
+          a.length === b.length &&
+          crypto.timingSafeEqual(a, b)
+        );
       }
-
-      const a = Buffer.from(hex, "hex");
-      const b = key;
-
-      resolve(
-        a.length === b.length &&
-        crypto.timingSafeEqual(a, b)
-      );
-    });
+    );
   });
+}
+
+function getBearerToken(req) {
+  const header =
+    req.headers.authorization || "";
+
+  return header.replace(
+    /^Bearer\s+/i,
+    ""
+  ).trim();
 }
 
 /*
   AUTHENTICATION
 */
 function auth(req, res, next) {
-  const raw = (
-    req.headers.authorization || ""
-  ).replace(/^Bearer\s+/i, "");
+  const raw = getBearerToken(req);
 
   if (!raw) {
     return res.status(401).json({
@@ -389,6 +509,8 @@ function auth(req, res, next) {
       }
 
       req.player = result.rows[0];
+      req.sessionToken = raw;
+
       next();
     })
     .catch(next);
@@ -398,9 +520,7 @@ function auth(req, res, next) {
   ADMIN AUTHENTICATION
 */
 function adminAuth(req, res, next) {
-  const raw = (
-    req.headers.authorization || ""
-  ).replace(/^Bearer\s+/i, "");
+  const raw = getBearerToken(req);
 
   if (!raw) {
     return res.status(401).json({
@@ -429,6 +549,8 @@ function adminAuth(req, res, next) {
       }
 
       req.player = result.rows[0];
+      req.sessionToken = raw;
+
       next();
     })
     .catch(next);
@@ -437,38 +559,46 @@ function adminAuth(req, res, next) {
 /*
   SETTLE PASSIVE BUSINESS INCOME
 */
-async function settle(playerId, client = pool) {
-  const playerResult = await client.query(
-    `
-      SELECT *
-      FROM players
-      WHERE id = $1
-      FOR UPDATE
-    `,
-    [playerId]
-  );
+async function settle(
+  playerId,
+  client = pool
+) {
+  const playerResult =
+    await client.query(
+      `
+        SELECT *
+        FROM players
+        WHERE id = $1
+        FOR UPDATE
+      `,
+      [playerId]
+    );
 
   if (!playerResult.rowCount) {
     throw new Error("Player missing");
   }
 
-  const player = playerResult.rows[0];
+  const player =
+    playerResult.rows[0];
 
-  const businessResult = await client.query(
-    `
-      SELECT *
-      FROM businesses
-      WHERE player_id = $1
-    `,
-    [playerId]
-  );
+  const businessResult =
+    await client.query(
+      `
+        SELECT *
+        FROM businesses
+        WHERE player_id = $1
+      `,
+      [playerId]
+    );
 
   let perSec = 0;
 
   for (const row of businessResult.rows) {
-    const business = BUSINESSES.find(
-      (item) => item.id === row.business_id
-    );
+    const business =
+      BUSINESSES.find(
+        (item) =>
+          item.id === row.business_id
+      );
 
     if (!business) {
       continue;
@@ -485,7 +615,9 @@ async function settle(playerId, client = pool) {
     0,
     (
       Date.now() -
-      new Date(player.last_settled).getTime()
+      new Date(
+        player.last_settled
+      ).getTime()
     ) / 1000
   );
 
@@ -522,12 +654,16 @@ async function settle(playerId, client = pool) {
   };
 }
 
-function publicPlayer(player, perSec = 0) {
+function publicPlayer(
+  player,
+  perSec = 0
+) {
   return {
     id: player.id,
     username: player.username,
     cash: Number(player.cash),
-    lifetimeCash: Number(player.lifetime_cash),
+    lifetimeCash:
+      Number(player.lifetime_cash),
     rebirths: player.rebirths,
     perSec
   };
@@ -536,166 +672,196 @@ function publicPlayer(player, perSec = 0) {
 /*
   HEALTH
 */
-app.get("/health", async (req, res) => {
-  try {
-    await pool.query("SELECT 1");
+app.get(
+  "/health",
+  async (req, res) => {
+    try {
+      await pool.query("SELECT 1");
 
-    res.json({
-      ok: true,
-      game: "Hustle Empire"
-    });
-  } catch (error) {
-    console.error(error);
+      res.json({
+        ok: true,
+        game: "Hustle Empire"
+      });
+    } catch (error) {
+      console.error(error);
 
-    res.status(503).json({
-      ok: false
-    });
-  }
-});
-
-/*
-  REGISTER NORMAL PLAYER
-*/
-app.post("/api/register", async (req, res, next) => {
-  try {
-    const username = String(
-      req.body.username || ""
-    )
-      .trim()
-      .slice(0, 24);
-
-    const password = String(
-      req.body.password || ""
-    );
-
-    if (
-      !/^[A-Za-z0-9_]{3,24}$/.test(username) ||
-      password.length < 8
-    ) {
-      return res.status(400).json({
-        error:
-          "Username must be 3-24 letters/numbers/underscore and password must be 8+ characters"
+      res.status(503).json({
+        ok: false
       });
     }
+  }
+);
 
-    const passwordHashValue =
-      await passwordHash(password);
-
-    const client = await pool.connect();
-
+/*
+  REGISTER
+*/
+app.post(
+  "/api/register",
+  rateLimit("register"),
+  async (req, res, next) => {
     try {
-      await client.query("BEGIN");
+      const username = String(
+        req.body.username || ""
+      )
+        .trim()
+        .slice(0, 24);
 
-      const result = await client.query(
-        `
-          INSERT INTO players(
-            username,
-            password_hash,
-            is_admin
-          )
-          VALUES($1, $2, FALSE)
-          RETURNING *
-        `,
-        [
-          username,
-          passwordHashValue
-        ]
+      const password = String(
+        req.body.password || ""
       );
 
-      const player = result.rows[0];
-
-      for (const business of BUSINESSES) {
-        await client.query(
-          `
-            INSERT INTO businesses(
-              player_id,
-              business_id
-            )
-            VALUES($1, $2)
-            ON CONFLICT DO NOTHING
-          `,
-          [
-            player.id,
-            business.id
-          ]
-        );
-      }
-
-      await client.query("COMMIT");
-
-      return issueSession(player, res);
-    } catch (error) {
-      await client.query("ROLLBACK");
-
-      if (error.code === "23505") {
-        return res.status(409).json({
-          error: "Username already exists"
+      if (
+        !/^[A-Za-z0-9_]{3,24}$/.test(
+          username
+        ) ||
+        password.length < 8
+      ) {
+        return res.status(400).json({
+          error:
+            "Username must be 3-24 letters/numbers/underscore and password must be 8+ characters"
         });
       }
 
-      throw error;
-    } finally {
-      client.release();
+      const passwordHashValue =
+        await passwordHash(password);
+
+      const client =
+        await pool.connect();
+
+      try {
+        await client.query("BEGIN");
+
+        const result =
+          await client.query(
+            `
+              INSERT INTO players(
+                username,
+                password_hash,
+                is_admin
+              )
+              VALUES($1, $2, FALSE)
+              RETURNING *
+            `,
+            [
+              username,
+              passwordHashValue
+            ]
+          );
+
+        const player =
+          result.rows[0];
+
+        for (const business of BUSINESSES) {
+          await client.query(
+            `
+              INSERT INTO businesses(
+                player_id,
+                business_id
+              )
+              VALUES($1, $2)
+              ON CONFLICT DO NOTHING
+            `,
+            [
+              player.id,
+              business.id
+            ]
+          );
+        }
+
+        await client.query("COMMIT");
+
+        return issueSession(
+          player,
+          res
+        );
+      } catch (error) {
+        await client.query("ROLLBACK");
+
+        if (error.code === "23505") {
+          return res.status(409).json({
+            error:
+              "Username already exists"
+          });
+        }
+
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      next(error);
     }
-  } catch (error) {
-    next(error);
   }
-});
+);
 
 /*
   LOGIN
 */
-app.post("/api/login", async (req, res, next) => {
-  try {
-    const username = String(
-      req.body.username || ""
-    ).trim();
+app.post(
+  "/api/login",
+  rateLimit("login"),
+  async (req, res, next) => {
+    try {
+      const username = String(
+        req.body.username || ""
+      ).trim();
 
-    const password = String(
-      req.body.password || ""
-    );
+      const password = String(
+        req.body.password || ""
+      );
 
-    const result = await pool.query(
-      `
-        SELECT *
-        FROM players
-        WHERE username = $1
-      `,
-      [username]
-    );
+      const result =
+        await pool.query(
+          `
+            SELECT *
+            FROM players
+            WHERE username = $1
+          `,
+          [username]
+        );
 
-    if (!result.rowCount) {
-      return res.status(401).json({
-        error: "Invalid login"
-      });
+      if (!result.rowCount) {
+        return res.status(401).json({
+          error: "Invalid login"
+        });
+      }
+
+      const player =
+        result.rows[0];
+
+      const valid =
+        await verifyPassword(
+          password,
+          player.password_hash
+        );
+
+      if (!valid) {
+        return res.status(401).json({
+          error: "Invalid login"
+        });
+      }
+
+      return issueSession(
+        player,
+        res
+      );
+    } catch (error) {
+      next(error);
     }
-
-    const player = result.rows[0];
-
-    const valid = await verifyPassword(
-      password,
-      player.password_hash
-    );
-
-    if (!valid) {
-      return res.status(401).json({
-        error: "Invalid login"
-      });
-    }
-
-    return issueSession(player, res);
-  } catch (error) {
-    next(error);
   }
-});
+);
 
 /*
-  SESSION
+  SESSION CREATION
 */
-async function issueSession(player, res) {
-  const raw = crypto
-    .randomBytes(32)
-    .toString("hex");
+async function issueSession(
+  player,
+  res
+) {
+  const raw =
+    crypto.randomBytes(32).toString(
+      "hex"
+    );
 
   await pool.query(
     `
@@ -721,6 +887,33 @@ async function issueSession(player, res) {
 }
 
 /*
+  LOGOUT
+  ------
+  Immediately revokes the current session.
+*/
+app.post(
+  "/api/logout",
+  auth,
+  async (req, res, next) => {
+    try {
+      await pool.query(
+        `
+          DELETE FROM sessions
+          WHERE token_hash = $1
+        `,
+        [hash(req.sessionToken)]
+      );
+
+      res.json({
+        ok: true
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/*
   PLAYER STATE
 */
 app.get(
@@ -728,40 +921,45 @@ app.get(
   auth,
   async (req, res, next) => {
     try {
-      const settled = await settle(
-        req.player.id
-      );
+      const settled =
+        await settle(
+          req.player.id
+        );
 
-      const playerResult = await pool.query(
-        `
-          SELECT *
-          FROM players
-          WHERE id = $1
-        `,
-        [req.player.id]
-      );
+      const playerResult =
+        await pool.query(
+          `
+            SELECT *
+            FROM players
+            WHERE id = $1
+          `,
+          [req.player.id]
+        );
 
-      const player = playerResult.rows[0];
+      const player =
+        playerResult.rows[0];
 
-      const businessResult = await pool.query(
-        `
-          SELECT
-            business_id,
-            level,
-            employees,
-            upgrade
-          FROM businesses
-          WHERE player_id = $1
-        `,
-        [player.id]
-      );
+      const businessResult =
+        await pool.query(
+          `
+            SELECT
+              business_id,
+              level,
+              employees,
+              upgrade
+            FROM businesses
+            WHERE player_id = $1
+          `,
+          [player.id]
+        );
 
       res.json({
         player: publicPlayer(
           player,
           settled.perSec
         ),
-        businesses: businessResult.rows,
+        businesses:
+          businessResult.rows,
         catalog: BUSINESSES
       });
     } catch (error) {
@@ -782,9 +980,10 @@ app.post(
         req.body.businessId || ""
       );
 
-      const business = BUSINESSES.find(
-        (item) => item.id === id
-      );
+      const business =
+        BUSINESSES.find(
+          (item) => item.id === id
+        );
 
       if (!business) {
         return res.status(400).json({
@@ -792,7 +991,8 @@ app.post(
         });
       }
 
-      const client = await pool.connect();
+      const client =
+        await pool.connect();
 
       try {
         await client.query("BEGIN");
@@ -847,7 +1047,9 @@ app.post(
           );
 
         if (cash < cost) {
-          await client.query("ROLLBACK");
+          await client.query(
+            "ROLLBACK"
+          );
 
           return res.status(400).json({
             error: "Not enough cash"
@@ -904,7 +1106,10 @@ app.post(
           ok: true
         });
       } catch (error) {
-        await client.query("ROLLBACK");
+        await client.query(
+          "ROLLBACK"
+        );
+
         throw error;
       } finally {
         client.release();
@@ -927,9 +1132,10 @@ app.post(
         req.body.businessId || ""
       );
 
-      const business = BUSINESSES.find(
-        (item) => item.id === id
-      );
+      const business =
+        BUSINESSES.find(
+          (item) => item.id === id
+        );
 
       if (!business) {
         return res.status(400).json({
@@ -937,7 +1143,8 @@ app.post(
         });
       }
 
-      const client = await pool.connect();
+      const client =
+        await pool.connect();
 
       try {
         await client.query("BEGIN");
@@ -972,7 +1179,9 @@ app.post(
         }
 
         if (!row.level) {
-          await client.query("ROLLBACK");
+          await client.query(
+            "ROLLBACK"
+          );
 
           return res.status(400).json({
             error:
@@ -1005,7 +1214,9 @@ app.post(
           );
 
         if (cash < cost) {
-          await client.query("ROLLBACK");
+          await client.query(
+            "ROLLBACK"
+          );
 
           return res.status(400).json({
             error: "Not enough cash"
@@ -1062,7 +1273,10 @@ app.post(
           ok: true
         });
       } catch (error) {
-        await client.query("ROLLBACK");
+        await client.query(
+          "ROLLBACK"
+        );
+
         throw error;
       } finally {
         client.release();
@@ -1085,9 +1299,10 @@ app.post(
         req.body.businessId || ""
       );
 
-      const business = BUSINESSES.find(
-        (item) => item.id === id
-      );
+      const business =
+        BUSINESSES.find(
+          (item) => item.id === id
+        );
 
       if (!business) {
         return res.status(400).json({
@@ -1098,7 +1313,8 @@ app.post(
       const cost =
         business.baseCost * 0.75;
 
-      const client = await pool.connect();
+      const client =
+        await pool.connect();
 
       try {
         await client.query("BEGIN");
@@ -1133,7 +1349,9 @@ app.post(
         }
 
         if (!row.level) {
-          await client.query("ROLLBACK");
+          await client.query(
+            "ROLLBACK"
+          );
 
           return res.status(400).json({
             error:
@@ -1158,7 +1376,9 @@ app.post(
           );
 
         if (cash < cost) {
-          await client.query("ROLLBACK");
+          await client.query(
+            "ROLLBACK"
+          );
 
           return res.status(400).json({
             error: "Not enough cash"
@@ -1215,7 +1435,10 @@ app.post(
           ok: true
         });
       } catch (error) {
-        await client.query("ROLLBACK");
+        await client.query(
+          "ROLLBACK"
+        );
+
         throw error;
       } finally {
         client.release();
@@ -1234,7 +1457,8 @@ app.post(
   auth,
   async (req, res, next) => {
     try {
-      const client = await pool.connect();
+      const client =
+        await pool.connect();
 
       try {
         await client.query("BEGIN");
@@ -1266,10 +1490,13 @@ app.post(
           );
 
         if (
-          Number(player.lifetime_cash) <
-          required
+          Number(
+            player.lifetime_cash
+          ) < required
         ) {
-          await client.query("ROLLBACK");
+          await client.query(
+            "ROLLBACK"
+          );
 
           return res.status(400).json({
             error:
@@ -1321,7 +1548,10 @@ app.post(
           ok: true
         });
       } catch (error) {
-        await client.query("ROLLBACK");
+        await client.query(
+          "ROLLBACK"
+        );
+
         throw error;
       } finally {
         client.release();
@@ -1334,34 +1564,35 @@ app.post(
 
 /*
   LEADERBOARD
-  ------------
-  Admin accounts are intentionally excluded.
 */
 app.get(
   "/api/leaderboard",
   async (req, res, next) => {
     try {
-      const result = await pool.query(
-        `
-          SELECT
-            username,
-            rebirths,
-            lifetime_cash
-          FROM players
-          WHERE is_admin = FALSE
-          ORDER BY
-            rebirths DESC,
-            lifetime_cash DESC
-          LIMIT 50
-        `
-      );
+      const result =
+        await pool.query(
+          `
+            SELECT
+              username,
+              rebirths,
+              lifetime_cash
+            FROM players
+            WHERE is_admin = FALSE
+            ORDER BY
+              rebirths DESC,
+              lifetime_cash DESC
+            LIMIT 50
+          `
+        );
 
       res.json(
         result.rows.map(
           (player, index) => ({
             rank: index + 1,
-            username: player.username,
-            rebirths: player.rebirths,
+            username:
+              player.username,
+            rebirths:
+              player.rebirths,
             lifetimeCash:
               Number(
                 player.lifetime_cash
@@ -1377,14 +1608,13 @@ app.get(
 
 /*
   DAILY REWARD
-  ------------
-  Server-side 24-hour protection.
 */
 app.post(
   "/api/reward/daily",
   auth,
   async (req, res, next) => {
-    const client = await pool.connect();
+    const client =
+      await pool.connect();
 
     try {
       await client.query("BEGIN");
@@ -1409,7 +1639,9 @@ app.post(
         );
 
       if (!playerResult.rowCount) {
-        await client.query("ROLLBACK");
+        await client.query(
+          "ROLLBACK"
+        );
 
         return res.status(404).json({
           error: "Player missing"
@@ -1445,7 +1677,9 @@ app.post(
               nextClaimTime
             ).toISOString();
 
-          await client.query("ROLLBACK");
+          await client.query(
+            "ROLLBACK"
+          );
 
           return res.status(429).json({
             error:
@@ -1511,7 +1745,9 @@ app.post(
       });
     } catch (error) {
       try {
-        await client.query("ROLLBACK");
+        await client.query(
+          "ROLLBACK"
+        );
       } catch {
         // Ignore rollback errors.
       }
@@ -1539,9 +1775,15 @@ app.post(
 
 /*
   ADMIN CREATE
+  ------------
+  Protected by:
+  - ADMIN_SECRET
+  - admin-specific rate limit
+  - server-side is_admin flag
 */
 app.post(
   "/api/admin/create",
+  rateLimit("admin"),
   async (req, res, next) => {
     try {
       if (
@@ -1565,7 +1807,9 @@ app.post(
       );
 
       if (
-        !/^[A-Za-z0-9_]{3,24}$/.test(username) ||
+        !/^[A-Za-z0-9_]{3,24}$/.test(
+          username
+        ) ||
         password.length < 8
       ) {
         return res.status(400).json({
@@ -1577,28 +1821,31 @@ app.post(
       const passwordHashValue =
         await passwordHash(password);
 
-      const client = await pool.connect();
+      const client =
+        await pool.connect();
 
       try {
         await client.query("BEGIN");
 
-        const result = await client.query(
-          `
-            INSERT INTO players(
+        const result =
+          await client.query(
+            `
+              INSERT INTO players(
+                username,
+                password_hash,
+                is_admin
+              )
+              VALUES($1, $2, TRUE)
+              RETURNING *
+            `,
+            [
               username,
-              password_hash,
-              is_admin
-            )
-            VALUES($1, $2, TRUE)
-            RETURNING *
-          `,
-          [
-            username,
-            passwordHashValue
-          ]
-        );
+              passwordHashValue
+            ]
+          );
 
-        const player = result.rows[0];
+        const player =
+          result.rows[0];
 
         for (const business of BUSINESSES) {
           await client.query(
@@ -1624,7 +1871,9 @@ app.post(
           res
         );
       } catch (error) {
-        await client.query("ROLLBACK");
+        await client.query(
+          "ROLLBACK"
+        );
 
         if (error.code === "23505") {
           return res.status(409).json({
@@ -1648,6 +1897,7 @@ app.post(
 */
 app.post(
   "/api/admin/status",
+  rateLimit("admin"),
   async (req, res, next) => {
     try {
       if (
@@ -1717,24 +1967,62 @@ app.get(
         });
       }
 
-      const player = result.rows[0];
+      const player =
+        result.rows[0];
 
       res.json({
         id: player.id,
-        username: player.username,
-        cash: Number(player.cash),
+        username:
+          player.username,
+        cash:
+          Number(player.cash),
         lifetimeCash:
-          Number(player.lifetime_cash),
-        rebirths: player.rebirths,
-        createdAt: player.created_at,
-        lastDaily: player.last_daily,
-        isAdmin: player.is_admin
+          Number(
+            player.lifetime_cash
+          ),
+        rebirths:
+          player.rebirths,
+        createdAt:
+          player.created_at,
+        lastDaily:
+          player.last_daily,
+        isAdmin:
+          player.is_admin
       });
     } catch (error) {
       next(error);
     }
   }
 );
+
+/*
+  EXPIRED SESSION CLEANUP
+  -----------------------
+  Runs periodically without touching
+  active sessions.
+*/
+async function cleanupExpiredSessions() {
+  try {
+    const result =
+      await pool.query(
+        `
+          DELETE FROM sessions
+          WHERE expires_at <= now()
+        `
+      );
+
+    if (result.rowCount > 0) {
+      console.log(
+        `Expired session cleanup removed ${result.rowCount} session(s).`
+      );
+    }
+  } catch (error) {
+    console.error(
+      "Expired session cleanup failed:",
+      error
+    );
+  }
+}
 
 /*
   ERROR HANDLER
@@ -1757,14 +2045,27 @@ app.use(
   START SERVER
 */
 init()
-  .then(() => cleanupTestAccountsOnce())
-  .then(() => {
+  .then(() =>
+    cleanupTestAccountsOnce()
+  )
+  .then(async () => {
+    await cleanupExpiredSessions();
+
+    setInterval(
+      cleanupExpiredSessions,
+      60 * 60 * 1000
+    ).unref();
+
     app.listen(
       PORT,
       "0.0.0.0",
       () => {
         console.log(
           `Hustle Empire listening on ${PORT}`
+        );
+
+        console.log(
+          "Security layer enabled: rate limits, logout, session cleanup, admin protection."
         );
       }
     );
