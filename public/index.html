@@ -1,7 +1,223 @@
-HUSTLE EMPIRE
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hustle Empire</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
 
-Build. Upgrade. Rebirth. Dominate.
+<body>
 
-Enter the Empire
+  <!-- LOGIN / REGISTER -->
+  <section id="auth" class="auth-screen">
+    <div class="auth-card">
 
-Create AccountLog In
+      <div class="logo">HUSTLE EMPIRE</div>
+      <div class="tagline">Build. Upgrade. Rebirth. Dominate.</div>
+
+      <div class="auth-tabs">
+        <button id="registerTab" class="active" onclick="setMode('register')">
+          Create Account
+        </button>
+
+        <button id="loginTab" onclick="setMode('login')">
+          Log In
+        </button>
+      </div>
+
+      <div class="field">
+        <label for="u">Username</label>
+        <input
+          id="u"
+          type="text"
+          autocomplete="username"
+          placeholder="Enter username"
+        >
+      </div>
+
+      <div class="field">
+        <label for="p">Password</label>
+        <input
+          id="p"
+          type="password"
+          autocomplete="current-password"
+          placeholder="Enter password"
+        >
+      </div>
+
+      <button id="authButton" class="primary-btn" onclick="register()">
+        Create Account
+      </button>
+
+      <div id="msg" class="message"></div>
+
+    </div>
+  </section>
+
+
+  <!-- GAME -->
+  <section id="game" class="hidden">
+    <div class="app">
+
+      <div class="topbar">
+        <div>
+          <div class="title">HUSTLE EMPIRE</div>
+          <div class="subtitle">
+            Build your empire and become the richest player.
+          </div>
+        </div>
+
+        <button class="logout-btn" onclick="logout()">
+          Log Out
+        </button>
+      </div>
+
+
+      <!-- PLAYER STATS -->
+      <div class="stats">
+
+        <div class="stat">
+          <div class="stat-label">Cash</div>
+          <div id="cash" class="stat-value">$0</div>
+        </div>
+
+        <div class="stat">
+          <div class="stat-label">Income</div>
+          <div id="rate" class="stat-value">$0/s</div>
+        </div>
+
+        <div class="stat">
+          <div class="stat-label">Rebirths</div>
+          <div id="rebirths" class="stat-value">0</div>
+        </div>
+
+        <div class="stat">
+          <div class="stat-label">Businesses</div>
+          <div id="businessCount" class="stat-value">0</div>
+        </div>
+
+      </div>
+
+
+      <!-- BUSINESSES -->
+      <div class="section">
+
+        <div class="section-title">
+          Your Businesses
+        </div>
+
+        <div id="businesses" class="business-grid"></div>
+
+      </div>
+
+
+      <!-- ACTIONS -->
+      <div class="section">
+
+        <div class="section-title">
+          Empire Actions
+        </div>
+
+        <div class="action-panel">
+
+          <button class="action-btn" onclick="daily()">
+            🎁 Daily Reward
+          </button>
+
+          <button class="action-btn" onclick="leaderboard()">
+            🏆 Leaderboard
+          </button>
+
+          <button class="action-btn" onclick="rebirth()">
+            🔥 Rebirth
+          </button>
+
+        </div>
+
+      </div>
+
+
+      <!-- LEADERBOARD -->
+      <div class="section">
+
+        <div class="section-title">
+          Leaderboard
+        </div>
+
+        <div id="board" class="leaderboard">
+          <div class="leader-row leader-head">
+            <div>#</div>
+            <div>Player</div>
+            <div>Rebirths</div>
+            <div>Lifetime Cash</div>
+          </div>
+        </div>
+
+      </div>
+
+
+      <div class="footer">
+        Hustle Empire Online
+      </div>
+
+    </div>
+  </section>
+
+
+  <script src="/app.js"></script>
+
+  <script>
+    let authMode = "register";
+
+    function setMode(mode) {
+      authMode = mode;
+
+      const registerTab = document.getElementById("registerTab");
+      const loginTab = document.getElementById("loginTab");
+      const authButton = document.getElementById("authButton");
+
+      if (mode === "register") {
+        registerTab.classList.add("active");
+        loginTab.classList.remove("active");
+
+        authButton.textContent = "Create Account";
+        authButton.onclick = register;
+      } else {
+        loginTab.classList.add("active");
+        registerTab.classList.remove("active");
+
+        authButton.textContent = "Log In";
+        authButton.onclick = login;
+      }
+
+      document.getElementById("msg").textContent = "";
+    }
+
+    function logout() {
+      localStorage.removeItem("he_token");
+      location.reload();
+    }
+
+    const originalRender = window.render;
+
+    window.render = function () {
+      if (typeof originalRender === "function") {
+        originalRender();
+      }
+
+      if (window.state && window.state.player) {
+        const count = document.getElementById("businessCount");
+
+        if (count) {
+          count.textContent = window.state.businesses
+            ? window.state.businesses.length
+            : 0;
+        }
+      }
+    };
+  </script>
+
+</body>
+</html>
+
