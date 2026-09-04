@@ -17,10 +17,19 @@ async function api(path, opts = {}) {
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw Error(data.error || "Request failed");
+    throw Error(data.error || "Something went wrong. Please try again.");
   }
 
   return data;
+}
+
+function showMessage(message, success = false) {
+  const msg = $("msg");
+
+  if (!msg) return;
+
+  msg.textContent = message;
+  msg.classList.toggle("success", success);
 }
 
 function showGame() {
@@ -29,45 +38,128 @@ function showGame() {
   refresh();
 }
 
+function validateAccount(username, password) {
+  username = username.trim();
+
+  if (!username) {
+    return "Please enter a username.";
+  }
+
+  if (username.length < 3) {
+    return "Username must be at least 3 characters.";
+  }
+
+  if (username.length > 24) {
+    return "Username must be 24 characters or less.";
+  }
+
+  if (!/^[A-Za-z0-9_]+$/.test(username)) {
+    return "Username can only use letters, numbers, and _.";
+  }
+
+  if (!password) {
+    return "Please enter a password.";
+  }
+
+  if (password.length < 8) {
+    return "Password must be at least 8 characters.";
+  }
+
+  return null;
+}
+
 async function register() {
+  const username = $("u").value.trim();
+  const password = $("p").value;
+
+  const validationError = validateAccount(username, password);
+
+  if (validationError) {
+    showMessage(validationError);
+    return;
+  }
+
+  const button = $("authButton");
+
   try {
+    button.disabled = true;
+    button.textContent = "Creating Account...";
+
+    showMessage("Creating your empire...");
+
     const data = await api("/api/register", {
       method: "POST",
       body: JSON.stringify({
-        username: $("u").value,
-        password: $("p").value
+        username,
+        password
       })
     });
 
     token = data.token;
+
     localStorage.setItem("he_token", token);
+
+    showMessage("Account created!", true);
+
     showGame();
+
   } catch (error) {
-    $("msg").textContent = error.message;
+    showMessage(error.message || "Unable to create account.");
+  } finally {
+    button.disabled = false;
+
+    if (typeof authMode === "undefined" || authMode === "register") {
+      button.textContent = "Create Account";
+    }
   }
 }
 
 async function login() {
+  const username = $("u").value.trim();
+  const password = $("p").value;
+
+  if (!username || !password) {
+    showMessage("Enter your username and password.");
+    return;
+  }
+
+  const button = $("authButton");
+
   try {
+    button.disabled = true;
+    button.textContent = "Logging In...";
+
+    showMessage("Logging you in...");
+
     const data = await api("/api/login", {
       method: "POST",
       body: JSON.stringify({
-        username: $("u").value,
-        password: $("p").value
+        username,
+        password
       })
     });
 
     token = data.token;
+
     localStorage.setItem("he_token", token);
+
     showGame();
+
   } catch (error) {
-    $("msg").textContent = error.message;
+    showMessage(error.message || "Unable to log in.");
+  } finally {
+    button.disabled = false;
+
+    if (typeof authMode === "undefined" || authMode === "login") {
+      button.textContent = "Log In";
+    }
   }
 }
 
 function logout() {
   localStorage.removeItem("he_token");
   token = null;
+  state = null;
   location.reload();
 }
 
@@ -77,12 +169,16 @@ async function refresh() {
   try {
     state = await api("/api/state");
     render();
+
   } catch (error) {
     localStorage.removeItem("he_token");
+
     token = null;
+
     $("auth").hidden = false;
     $("game").hidden = true;
-    $("msg").textContent = error.message;
+
+    showMessage(error.message);
   }
 }
 
@@ -105,6 +201,7 @@ function render() {
   if (!state || !state.player) return;
 
   const player = state.player;
+
   const businesses = Array.isArray(state.businesses)
     ? state.businesses
     : [];
@@ -184,6 +281,7 @@ async function act(path, id) {
     });
 
     await refresh();
+
   } catch (error) {
     alert(error.message);
   }
@@ -197,6 +295,7 @@ async function daily() {
     );
 
     alert("Reward: " + money(data.reward));
+
     await refresh();
 
   } catch (error) {
