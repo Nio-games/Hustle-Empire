@@ -7,10 +7,10 @@ import { fileURLToPath } from "url";
 const { Pool } = pg;
 const app = express();
 
+const ROOT = path.dirname(fileURLToPath(import.meta.url));
+
 app.use(express.json({ limit: "32kb" }));
-app.use(
-  express.static(path.join(path.dirname(fileURLToPath(import.meta.url)), "public"))
-);
+app.use(express.static(path.join(ROOT, "public")));
 
 const PORT = Number(process.env.PORT || 3000);
 
@@ -22,97 +22,71 @@ const pool = new Pool({
 });
 
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "";
-const SESSION_MS = Number(process.env.SESSION_DAYS || 30) * 86400000;
+const SESSION_MS =
+  Number(process.env.SESSION_DAYS || 30) * 86400000;
+
+const DAILY_COOLDOWN_MS = 86400000;
 
 const BUSINESSES = [
-  { id: "street-hustle", name: "Street Hustle", baseCost: 100, income: 4 },
-  { id: "food-cart", name: "Food Cart", baseCost: 750, income: 24 },
-  { id: "car-wash", name: "Car Wash", baseCost: 5000, income: 180 },
-  { id: "nightclub", name: "Nightclub", baseCost: 50000, income: 2200 },
-  { id: "shipping", name: "Shipping Empire", baseCost: 500000, income: 26000 },
-  { id: "tech-firm", name: "Tech Firm", baseCost: 5000000, income: 310000 }
+  {
+    id: "street-hustle",
+    name: "Street Hustle",
+    baseCost: 100,
+    income: 4
+  },
+  {
+    id: "food-cart",
+    name: "Food Cart",
+    baseCost: 750,
+    income: 24
+  },
+  {
+    id: "car-wash",
+    name: "Car Wash",
+    baseCost: 5000,
+    income: 180
+  },
+  {
+    id: "nightclub",
+    name: "Nightclub",
+    baseCost: 50000,
+    income: 2200
+  },
+  {
+    id: "shipping",
+    name: "Shipping Empire",
+    baseCost: 500000,
+    income: 26000
+  },
+  {
+    id: "tech-firm",
+    name: "Tech Firm",
+    baseCost: 5000000,
+    income: 310000
+  }
 ];
 
+const DAILY_BASE_REWARD = 1000;
+const DAILY_REBIRTH_BONUS = 500;
+
 /*
-  DATABASE MIGRATION
-  ------------------
-  This upgrades the older Hustle Empire database without deleting
-  existing player records.
+  DATABASE INITIALIZATION
+  -----------------------
+  Creates missing tables first, then upgrades the existing
+  Hustle Empire database without deleting player progress.
 */
-async function migrate() {
-  const columns = [
-    ["password_hash", "TEXT DEFAULT ''"],
-    ["cash", "NUMERIC(30,2) NOT NULL DEFAULT 500"],
-    ["lifetime_cash", "NUMERIC(30,2) NOT NULL DEFAULT 500"],
-    ["rebirths", "INT NOT NULL DEFAULT 0"],
-    ["last_settled", "TIMESTAMPTZ NOT NULL DEFAULT now()"]
-  ];
-
-  for (const [name, definition] of columns) {
-    const check = await pool.query(
-      `SELECT EXISTS (
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_name = 'players'
-          AND column_name = $1
-      ) AS exists`,
-      [name]
-    );
-
-    if (!check.rows[0].exists) {
-      console.log(`Adding missing column: ${name}`);
-      await pool.query(
-        `ALTER TABLE players ADD COLUMN ${name} ${definition}`
-      );
-    }
-  }
-
-  const emailCheck = await pool.query(
-    `SELECT EXISTS (
-      SELECT 1
-      FROM information_schema.columns
-      WHERE table_name = 'players'
-        AND column_name = 'email'
-    ) AS exists`
-  );
-
-  if (emailCheck.rows[0].exists) {
-    await pool.query(
-      `ALTER TABLE players ALTER COLUMN email DROP NOT NULL`
-    );
-  }
-
-  const passwordCheck = await pool.query(
-    `SELECT EXISTS (
-      SELECT 1
-      FROM information_schema.columns
-      WHERE table_name = 'players'
-        AND column_name = 'password'
-    ) AS exists`
-  );
-
-  if (passwordCheck.rows[0].exists) {
-    await pool.query(
-      `ALTER TABLE players ALTER COLUMN password DROP NOT NULL`
-    );
-  }
-
-  console.log("Database migration complete");
-}
-
 async function init() {
-  await migrate();
-
   await pool.query(`
     CREATE TABLE IF NOT EXISTS players(
       id BIGSERIAL PRIMARY KEY,
       username TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
+      password_hash TEXT NOT NULL DEFAULT '',
       cash NUMERIC(30,2) NOT NULL DEFAULT 500,
       lifetime_cash NUMERIC(30,2) NOT NULL DEFAULT 500,
       rebirths INT NOT NULL DEFAULT 0,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      last_settled TIMESTAMPTZ NOT NULL DEFAULT now()
+      last_settled TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_daily TIMESTAMPTZ
     );
 
     CREATE TABLE IF NOT EXISTS businesses(
@@ -139,24 +113,106 @@ async function init() {
     );
   `);
 
-  console.log("Database initialization complete");
+  /*
+    Upgrade legacy players table.
+  */
+  const columns = [
+    ["password_hash", "TEXT DEFAULT ''"],
+    ["cash", "NUMERIC(30,2) NOT NULL DEFAULT 500"],
+    ["lifetime_cash", "NUMERIC(30,2) NOT NULL DEFAULT 500"],
+    ["rebirths", "INT NOT NULL DEFAULT 0"],
+    ["last_settled", "TIMESTAMPTZ NOT NULL DEFAULT now()"],
+    ["last_daily", "TIMESTAMPTZ"]
+  ];
+
+  for (const [name, definition] of columns) {
+    const check = await pool.query(
+      `
+        SELECT EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_name = 'players'
+            AND column_name = $1
+        ) AS exists
+      `,
+      [name]
+    );
+
+    if (!check.rows[0].exists) {
+      console.log(`Adding missing column: ${name}`);
+
+      await pool.query(
+        `ALTER TABLE players ADD COLUMN ${name} ${definition}`
+      );
+    }
+  }
+
+  /*
+    Legacy databases may contain email/password columns
+    that are no longer required by Hustle Empire.
+  */
+  const emailCheck = await pool.query(
+    `
+      SELECT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'players'
+          AND column_name = 'email'
+      ) AS exists
+    `
+  );
+
+  if (emailCheck.rows[0].exists) {
+    await pool.query(
+      `ALTER TABLE players ALTER COLUMN email DROP NOT NULL`
+    );
+  }
+
+  const passwordCheck = await pool.query(
+    `
+      SELECT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'players'
+          AND column_name = 'password'
+      ) AS exists
+    `
+  );
+
+  if (passwordCheck.rows[0].exists) {
+    await pool.query(
+      `ALTER TABLE players ALTER COLUMN password DROP NOT NULL`
+    );
+  }
+
+  console.log("Database initialization and migration complete");
 }
 
-function hash(s) {
-  return crypto.createHash("sha256").update(s).digest("hex");
+/*
+  HELPERS
+*/
+function hash(value) {
+  return crypto
+    .createHash("sha256")
+    .update(value)
+    .digest("hex");
 }
 
 function passwordHash(
   password,
   salt = crypto.randomBytes(16).toString("hex")
 ) {
-  return new Promise((resolve, reject) =>
-    crypto.scrypt(password, salt, 64, (e, key) =>
-      e
-        ? reject(e)
-        : resolve(`${salt}:${key.toString("hex")}`)
-    )
-  );
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, 64, (error, key) => {
+      if (error) {
+        return reject(error);
+      }
+
+      resolve(
+        `${salt}:${key.toString("hex")}`
+      );
+    });
+  });
 }
 
 function verifyPassword(password, stored) {
@@ -170,9 +226,11 @@ function verifyPassword(password, stored) {
     return Promise.resolve(false);
   }
 
-  return new Promise((resolve, reject) =>
-    crypto.scrypt(password, salt, 64, (e, key) => {
-      if (e) return reject(e);
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, 64, (error, key) => {
+      if (error) {
+        return reject(error);
+      }
 
       const a = Buffer.from(hex, "hex");
       const b = key;
@@ -181,15 +239,17 @@ function verifyPassword(password, stored) {
         a.length === b.length &&
         crypto.timingSafeEqual(a, b)
       );
-    })
-  );
+    });
+  });
 }
 
+/*
+  AUTHENTICATION
+*/
 function auth(req, res, next) {
-  const raw = (req.headers.authorization || "").replace(
-    /^Bearer\s+/i,
-    ""
-  );
+  const raw = (
+    req.headers.authorization || ""
+  ).replace(/^Bearer\s+/i, "");
 
   if (!raw) {
     return res.status(401).json({
@@ -199,79 +259,112 @@ function auth(req, res, next) {
 
   pool
     .query(
-      `SELECT p.*
-       FROM sessions s
-       JOIN players p ON p.id = s.player_id
-       WHERE s.token_hash = $1
-         AND s.expires_at > now()`,
+      `
+        SELECT p.*
+        FROM sessions s
+        JOIN players p
+          ON p.id = s.player_id
+        WHERE s.token_hash = $1
+          AND s.expires_at > now()
+      `,
       [hash(raw)]
     )
-    .then((r) => {
-      if (!r.rowCount) {
+    .then((result) => {
+      if (!result.rowCount) {
         return res.status(401).json({
           error: "Session expired"
         });
       }
 
-      req.player = r.rows[0];
+      req.player = result.rows[0];
       next();
     })
     .catch(next);
 }
 
+/*
+  SETTLE PASSIVE BUSINESS INCOME
+*/
 async function settle(playerId, client = pool) {
-  const r = await client.query(
-    `SELECT *
-     FROM players
-     WHERE id = $1
-     FOR UPDATE`,
+  const playerResult = await client.query(
+    `
+      SELECT *
+      FROM players
+      WHERE id = $1
+      FOR UPDATE
+    `,
     [playerId]
   );
 
-  if (!r.rowCount) {
+  if (!playerResult.rowCount) {
     throw new Error("Player missing");
   }
 
-  const p = r.rows[0];
+  const player = playerResult.rows[0];
 
-  const biz = await client.query(
-    `SELECT *
-     FROM businesses
-     WHERE player_id = $1`,
+  const businessResult = await client.query(
+    `
+      SELECT *
+      FROM businesses
+      WHERE player_id = $1
+    `,
     [playerId]
   );
 
   let perSec = 0;
 
-  for (const row of biz.rows) {
-    const b = BUSINESSES.find(
-      (x) => x.id === row.business_id
+  for (const row of businessResult.rows) {
+    const business = BUSINESSES.find(
+      (item) => item.id === row.business_id
     );
 
-    if (b) {
-      perSec +=
-        b.income *
-        row.level *
-        (1 + row.upgrade * 0.15) *
-        (1 + row.employees * 0.05);
+    if (!business) {
+      continue;
     }
+
+    perSec +=
+      business.income *
+      row.level *
+      (1 + row.upgrade * 0.15) *
+      (1 + row.employees * 0.05);
   }
 
   const elapsed = Math.max(
     0,
-    (Date.now() - new Date(p.last_settled).getTime()) / 1000
+    (
+      Date.now() -
+      new Date(player.last_settled).getTime()
+    ) / 1000
   );
 
-  const earned = Math.min(elapsed * perSec, 1e12);
+  const earned = Math.min(
+    elapsed * perSec,
+    1e12
+  );
 
   if (earned > 0) {
     await client.query(
-      `UPDATE players
-       SET cash = cash + $1,
-           lifetime_cash = lifetime_cash + $1,
-           last_settled = now()
-       WHERE id = $2`,
+      `
+        UPDATE players
+        SET cash = cash + $1,
+            lifetime_cash = lifetime_cash + $1,
+            last_settled = now()
+        WHERE id = $2
+      `,
       [earned, playerId]
+    );
+  } else {
+    /*
+      Still move last_settled forward so repeated requests
+      do not keep calculating the same interval.
+    */
+    await client.query(
+      `
+        UPDATE players
+        SET last_settled = now()
+        WHERE id = $1
+      `,
+      [playerId]
     );
   }
 
@@ -281,17 +374,20 @@ async function settle(playerId, client = pool) {
   };
 }
 
-function publicPlayer(p, perSec = 0) {
+function publicPlayer(player, perSec = 0) {
   return {
-    id: p.id,
-    username: p.username,
-    cash: Number(p.cash),
-    lifetimeCash: Number(p.lifetime_cash),
-    rebirths: p.rebirths,
+    id: player.id,
+    username: player.username,
+    cash: Number(player.cash),
+    lifetimeCash: Number(player.lifetime_cash),
+    rebirths: player.rebirths,
     perSec
   };
 }
 
+/*
+  HEALTH
+*/
 app.get("/health", async (req, res) => {
   try {
     await pool.query("SELECT 1");
@@ -300,8 +396,8 @@ app.get("/health", async (req, res) => {
       ok: true,
       game: "Hustle Empire"
     });
-  } catch (e) {
-    console.error(e);
+  } catch (error) {
+    console.error(error);
 
     res.status(503).json({
       ok: false
@@ -314,11 +410,15 @@ app.get("/health", async (req, res) => {
 */
 app.post("/api/register", async (req, res, next) => {
   try {
-    const username = String(req.body.username || "")
+    const username = String(
+      req.body.username || ""
+    )
       .trim()
       .slice(0, 24);
 
-    const password = String(req.body.password || "");
+    const password = String(
+      req.body.password || ""
+    );
 
     if (
       !/^[A-Za-z0-9_]{3,24}$/.test(username) ||
@@ -330,48 +430,66 @@ app.post("/api/register", async (req, res, next) => {
       });
     }
 
-    const ph = await passwordHash(password);
-    const c = await pool.connect();
+    const passwordHashValue =
+      await passwordHash(password);
+
+    const client = await pool.connect();
 
     try {
-      await c.query("BEGIN");
+      await client.query("BEGIN");
 
-      const r = await c.query(
-        `INSERT INTO players(username, password_hash)
-         VALUES($1, $2)
-         RETURNING *`,
-        [username, ph]
+      const result = await client.query(
+        `
+          INSERT INTO players(
+            username,
+            password_hash
+          )
+          VALUES($1, $2)
+          RETURNING *
+        `,
+        [
+          username,
+          passwordHashValue
+        ]
       );
 
-      for (const b of BUSINESSES) {
-        await c.query(
-          `INSERT INTO businesses(
-            player_id,
-            business_id
-          )
-          VALUES($1, $2)`,
-          [r.rows[0].id, b.id]
+      const player = result.rows[0];
+
+      for (const business of BUSINESSES) {
+        await client.query(
+          `
+            INSERT INTO businesses(
+              player_id,
+              business_id
+            )
+            VALUES($1, $2)
+            ON CONFLICT DO NOTHING
+          `,
+          [
+            player.id,
+            business.id
+          ]
         );
       }
 
-      await c.query("COMMIT");
+      await client.query("COMMIT");
 
-      return issueSession(r.rows[0], res);
-    } catch (e) {
-      await c.query("ROLLBACK");
+      return issueSession(player, res);
+    } catch (error) {
+      await client.query("ROLLBACK");
 
-      if (e.code === "23505") {
+      if (error.code === "23505") {
         return res.status(409).json({
           error: "Username already exists"
         });
       }
 
-      throw e;
+      throw error;
     } finally {
-      c.release();
+      client.release();
     }
-  } catch (e) {
-    next(e);
+  } catch (error) {
+    next(error);
   }
 });
 
@@ -380,48 +498,71 @@ app.post("/api/register", async (req, res, next) => {
 */
 app.post("/api/login", async (req, res, next) => {
   try {
-    const username = String(req.body.username || "").trim();
-    const password = String(req.body.password || "");
+    const username = String(
+      req.body.username || ""
+    ).trim();
 
-    const r = await pool.query(
-      `SELECT *
-       FROM players
-       WHERE username = $1`,
+    const password = String(
+      req.body.password || ""
+    );
+
+    const result = await pool.query(
+      `
+        SELECT *
+        FROM players
+        WHERE username = $1
+      `,
       [username]
     );
 
-    if (
-      !r.rowCount ||
-      !(await verifyPassword(
-        password,
-        r.rows[0].password_hash
-      ))
-    ) {
+    if (!result.rowCount) {
       return res.status(401).json({
         error: "Invalid login"
       });
     }
 
-    return issueSession(r.rows[0], res);
-  } catch (e) {
-    next(e);
+    const player = result.rows[0];
+
+    const valid = await verifyPassword(
+      password,
+      player.password_hash
+    );
+
+    if (!valid) {
+      return res.status(401).json({
+        error: "Invalid login"
+      });
+    }
+
+    return issueSession(player, res);
+  } catch (error) {
+    next(error);
   }
 });
 
-async function issueSession(p, res) {
-  const raw = crypto.randomBytes(32).toString("hex");
+/*
+  SESSION
+*/
+async function issueSession(player, res) {
+  const raw = crypto
+    .randomBytes(32)
+    .toString("hex");
 
   await pool.query(
-    `INSERT INTO sessions(
-      token_hash,
-      player_id,
-      expires_at
-    )
-    VALUES($1, $2, $3)`,
+    `
+      INSERT INTO sessions(
+        token_hash,
+        player_id,
+        expires_at
+      )
+      VALUES($1, $2, $3)
+    `,
     [
       hash(raw),
-      p.id,
-      new Date(Date.now() + SESSION_MS)
+      player.id,
+      new Date(
+        Date.now() + SESSION_MS
+      )
     ]
   );
 
@@ -433,521 +574,891 @@ async function issueSession(p, res) {
 /*
   PLAYER STATE
 */
-app.get("/api/state", auth, async (req, res, next) => {
-  try {
-    const s = await settle(req.player.id);
+app.get(
+  "/api/state",
+  auth,
+  async (req, res, next) => {
+    try {
+      const settled = await settle(
+        req.player.id
+      );
 
-    const p = (
-      await pool.query(
-        `SELECT *
-         FROM players
-         WHERE id = $1`,
+      const playerResult = await pool.query(
+        `
+          SELECT *
+          FROM players
+          WHERE id = $1
+        `,
         [req.player.id]
-      )
-    ).rows[0];
+      );
 
-    const biz = (
-      await pool.query(
-        `SELECT business_id, level, employees, upgrade
-         FROM businesses
-         WHERE player_id = $1`,
-        [p.id]
-      )
-    ).rows;
+      const player = playerResult.rows[0];
 
-    res.json({
-      player: publicPlayer(p, s.perSec),
-      businesses: biz,
-      catalog: BUSINESSES
-    });
-  } catch (e) {
-    next(e);
+      const businessResult = await pool.query(
+        `
+          SELECT
+            business_id,
+            level,
+            employees,
+            upgrade
+          FROM businesses
+          WHERE player_id = $1
+        `,
+        [player.id]
+      );
+
+      res.json({
+        player: publicPlayer(
+          player,
+          settled.perSec
+        ),
+        businesses: businessResult.rows,
+        catalog: BUSINESSES
+      });
+    } catch (error) {
+      next(error);
+    }
   }
-});
+);
 
 /*
   BUY BUSINESS
 */
-app.post("/api/business/buy", auth, async (req, res, next) => {
-  try {
-    const id = String(req.body.businessId);
-
-    const b = BUSINESSES.find(
-      (x) => x.id === id
-    );
-
-    if (!b) {
-      return res.status(400).json({
-        error: "Unknown business"
-      });
-    }
-
-    const c = await pool.connect();
-
+app.post(
+  "/api/business/buy",
+  auth,
+  async (req, res, next) => {
     try {
-      await c.query("BEGIN");
-
-      await settle(req.player.id, c);
-
-      const r = await c.query(
-        `SELECT *
-         FROM businesses
-         WHERE player_id = $1
-           AND business_id = $2
-         FOR UPDATE`,
-        [req.player.id, id]
+      const id = String(
+        req.body.businessId || ""
       );
 
-      const row = r.rows[0];
+      const business = BUSINESSES.find(
+        (item) => item.id === id
+      );
 
-      const cost =
-        b.baseCost *
-        Math.pow(1.15, row.level);
-
-      const player = (
-        await c.query(
-          `SELECT cash
-           FROM players
-           WHERE id = $1`,
-          [req.player.id]
-        )
-      ).rows[0];
-
-      if (Number(player.cash) < cost) {
+      if (!business) {
         return res.status(400).json({
-          error: "Not enough cash"
+          error: "Unknown business"
         });
       }
 
-      await c.query(
-        `UPDATE players
-         SET cash = cash - $1
-         WHERE id = $2`,
-        [cost, req.player.id]
-      );
+      const client = await pool.connect();
 
-      await c.query(
-        `UPDATE businesses
-         SET level = level + 1
-         WHERE player_id = $1
-           AND business_id = $2`,
-        [req.player.id, id]
-      );
+      try {
+        await client.query("BEGIN");
 
-      await c.query(
-        `INSERT INTO ledger(
-          player_id,
-          kind,
-          amount
-        )
-        VALUES($1, 'business_purchase', $2)`,
-        [req.player.id, -cost]
-      );
+        await settle(
+          req.player.id,
+          client
+        );
 
-      await c.query("COMMIT");
+        const businessResult =
+          await client.query(
+            `
+              SELECT *
+              FROM businesses
+              WHERE player_id = $1
+                AND business_id = $2
+              FOR UPDATE
+            `,
+            [
+              req.player.id,
+              id
+            ]
+          );
 
-      res.json({
-        ok: true
-      });
-    } catch (e) {
-      await c.query("ROLLBACK");
-      throw e;
-    } finally {
-      c.release();
+        const row =
+          businessResult.rows[0];
+
+        if (!row) {
+          throw new Error(
+            "Business record missing"
+          );
+        }
+
+        const cost =
+          business.baseCost *
+          Math.pow(1.15, row.level);
+
+        const playerResult =
+          await client.query(
+            `
+              SELECT cash
+              FROM players
+              WHERE id = $1
+              FOR UPDATE
+            `,
+            [req.player.id]
+          );
+
+        const cash =
+          Number(
+            playerResult.rows[0].cash
+          );
+
+        if (cash < cost) {
+          await client.query("ROLLBACK");
+
+          return res.status(400).json({
+            error: "Not enough cash"
+          });
+        }
+
+        await client.query(
+          `
+            UPDATE players
+            SET cash = cash - $1
+            WHERE id = $2
+          `,
+          [
+            cost,
+            req.player.id
+          ]
+        );
+
+        await client.query(
+          `
+            UPDATE businesses
+            SET level = level + 1
+            WHERE player_id = $1
+              AND business_id = $2
+          `,
+          [
+            req.player.id,
+            id
+          ]
+        );
+
+        await client.query(
+          `
+            INSERT INTO ledger(
+              player_id,
+              kind,
+              amount
+            )
+            VALUES(
+              $1,
+              'business_purchase',
+              $2
+            )
+          `,
+          [
+            req.player.id,
+            -cost
+          ]
+        );
+
+        await client.query("COMMIT");
+
+        res.json({
+          ok: true
+        });
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      next(error);
     }
-  } catch (e) {
-    next(e);
   }
-});
+);
 
 /*
   UPGRADE BUSINESS
 */
-app.post("/api/business/upgrade", auth, async (req, res, next) => {
-  try {
-    const id = String(req.body.businessId);
-
-    const b = BUSINESSES.find(
-      (x) => x.id === id
-    );
-
-    if (!b) {
-      return res.status(400).json({
-        error: "Unknown business"
-      });
-    }
-
-    const c = await pool.connect();
-
+app.post(
+  "/api/business/upgrade",
+  auth,
+  async (req, res, next) => {
     try {
-      await c.query("BEGIN");
+      const id = String(
+        req.body.businessId || ""
+      );
 
-      await settle(req.player.id, c);
+      const business = BUSINESSES.find(
+        (item) => item.id === id
+      );
 
-      const row = (
-        await c.query(
-          `SELECT *
-           FROM businesses
-           WHERE player_id = $1
-             AND business_id = $2
-           FOR UPDATE`,
-          [req.player.id, id]
-        )
-      ).rows[0];
-
-      if (!row.level) {
+      if (!business) {
         return res.status(400).json({
-          error: "Buy the business first"
+          error: "Unknown business"
         });
       }
 
-      const cost =
-        b.baseCost *
-        2 *
-        Math.pow(1.7, row.upgrade);
+      const client = await pool.connect();
 
-      const cash = Number(
-        (
-          await c.query(
-            `SELECT cash
-             FROM players
-             WHERE id = $1`,
+      try {
+        await client.query("BEGIN");
+
+        await settle(
+          req.player.id,
+          client
+        );
+
+        const businessResult =
+          await client.query(
+            `
+              SELECT *
+              FROM businesses
+              WHERE player_id = $1
+                AND business_id = $2
+              FOR UPDATE
+            `,
+            [
+              req.player.id,
+              id
+            ]
+          );
+
+        const row =
+          businessResult.rows[0];
+
+        if (!row) {
+          throw new Error(
+            "Business record missing"
+          );
+        }
+
+        if (!row.level) {
+          await client.query("ROLLBACK");
+
+          return res.status(400).json({
+            error:
+              "Buy the business first"
+          });
+        }
+
+        const cost =
+          business.baseCost *
+          2 *
+          Math.pow(
+            1.7,
+            row.upgrade
+          );
+
+        const playerResult =
+          await client.query(
+            `
+              SELECT cash
+              FROM players
+              WHERE id = $1
+              FOR UPDATE
+            `,
             [req.player.id]
-          )
-        ).rows[0].cash
-      );
+          );
 
-      if (cash < cost) {
-        return res.status(400).json({
-          error: "Not enough cash"
+        const cash =
+          Number(
+            playerResult.rows[0].cash
+          );
+
+        if (cash < cost) {
+          await client.query("ROLLBACK");
+
+          return res.status(400).json({
+            error: "Not enough cash"
+          });
+        }
+
+        await client.query(
+          `
+            UPDATE players
+            SET cash = cash - $1
+            WHERE id = $2
+          `,
+          [
+            cost,
+            req.player.id
+          ]
+        );
+
+        await client.query(
+          `
+            UPDATE businesses
+            SET upgrade = upgrade + 1
+            WHERE player_id = $1
+              AND business_id = $2
+          `,
+          [
+            req.player.id,
+            id
+          ]
+        );
+
+        await client.query(
+          `
+            INSERT INTO ledger(
+              player_id,
+              kind,
+              amount
+            )
+            VALUES(
+              $1,
+              'upgrade',
+              $2
+            )
+          `,
+          [
+            req.player.id,
+            -cost
+          ]
+        );
+
+        await client.query("COMMIT");
+
+        res.json({
+          ok: true
         });
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
       }
-
-      await c.query(
-        `UPDATE players
-         SET cash = cash - $1
-         WHERE id = $2`,
-        [cost, req.player.id]
-      );
-
-      await c.query(
-        `UPDATE businesses
-         SET upgrade = upgrade + 1
-         WHERE player_id = $1
-           AND business_id = $2`,
-        [req.player.id, id]
-      );
-
-      await c.query(
-        `INSERT INTO ledger(
-          player_id,
-          kind,
-          amount
-        )
-        VALUES($1, 'upgrade', $2)`,
-        [req.player.id, -cost]
-      );
-
-      await c.query("COMMIT");
-
-      res.json({
-        ok: true
-      });
-    } catch (e) {
-      await c.query("ROLLBACK");
-      throw e;
-    } finally {
-      c.release();
+    } catch (error) {
+      next(error);
     }
-  } catch (e) {
-    next(e);
   }
-});
+);
 
 /*
   HIRE EMPLOYEE
 */
-app.post("/api/business/employee", auth, async (req, res, next) => {
-  try {
-    const id = String(req.body.businessId);
-
-    const b = BUSINESSES.find(
-      (x) => x.id === id
-    );
-
-    if (!b) {
-      return res.status(400).json({
-        error: "Unknown business"
-      });
-    }
-
-    const cost = b.baseCost * 0.75;
-
-    const c = await pool.connect();
-
+app.post(
+  "/api/business/employee",
+  auth,
+  async (req, res, next) => {
     try {
-      await c.query("BEGIN");
+      const id = String(
+        req.body.businessId || ""
+      );
 
-      await settle(req.player.id, c);
+      const business = BUSINESSES.find(
+        (item) => item.id === id
+      );
 
-      const row = (
-        await c.query(
-          `SELECT *
-           FROM businesses
-           WHERE player_id = $1
-             AND business_id = $2
-           FOR UPDATE`,
-          [req.player.id, id]
-        )
-      ).rows[0];
-
-      if (!row.level) {
+      if (!business) {
         return res.status(400).json({
-          error: "Buy the business first"
+          error: "Unknown business"
         });
       }
 
-      const cash = Number(
-        (
-          await c.query(
-            `SELECT cash
-             FROM players
-             WHERE id = $1`,
+      const cost =
+        business.baseCost * 0.75;
+
+      const client = await pool.connect();
+
+      try {
+        await client.query("BEGIN");
+
+        await settle(
+          req.player.id,
+          client
+        );
+
+        const businessResult =
+          await client.query(
+            `
+              SELECT *
+              FROM businesses
+              WHERE player_id = $1
+                AND business_id = $2
+              FOR UPDATE
+            `,
+            [
+              req.player.id,
+              id
+            ]
+          );
+
+        const row =
+          businessResult.rows[0];
+
+        if (!row) {
+          throw new Error(
+            "Business record missing"
+          );
+        }
+
+        if (!row.level) {
+          await client.query("ROLLBACK");
+
+          return res.status(400).json({
+            error:
+              "Buy the business first"
+          });
+        }
+
+        const playerResult =
+          await client.query(
+            `
+              SELECT cash
+              FROM players
+              WHERE id = $1
+              FOR UPDATE
+            `,
             [req.player.id]
-          )
-        ).rows[0].cash
-      );
+          );
 
-      if (cash < cost) {
-        return res.status(400).json({
-          error: "Not enough cash"
+        const cash =
+          Number(
+            playerResult.rows[0].cash
+          );
+
+        if (cash < cost) {
+          await client.query("ROLLBACK");
+
+          return res.status(400).json({
+            error: "Not enough cash"
+          });
+        }
+
+        await client.query(
+          `
+            UPDATE players
+            SET cash = cash - $1
+            WHERE id = $2
+          `,
+          [
+            cost,
+            req.player.id
+          ]
+        );
+
+        await client.query(
+          `
+            UPDATE businesses
+            SET employees = employees + 1
+            WHERE player_id = $1
+              AND business_id = $2
+          `,
+          [
+            req.player.id,
+            id
+          ]
+        );
+
+        await client.query(
+          `
+            INSERT INTO ledger(
+              player_id,
+              kind,
+              amount
+            )
+            VALUES(
+              $1,
+              'employee',
+              $2
+            )
+          `,
+          [
+            req.player.id,
+            -cost
+          ]
+        );
+
+        await client.query("COMMIT");
+
+        res.json({
+          ok: true
         });
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
       }
-
-      await c.query(
-        `UPDATE players
-         SET cash = cash - $1
-         WHERE id = $2`,
-        [cost, req.player.id]
-      );
-
-      await c.query(
-        `UPDATE businesses
-         SET employees = employees + 1
-         WHERE player_id = $1
-           AND business_id = $2`,
-        [req.player.id, id]
-      );
-
-      await c.query(
-        `INSERT INTO ledger(
-          player_id,
-          kind,
-          amount
-        )
-        VALUES($1, 'employee', $2)`,
-        [req.player.id, -cost]
-      );
-
-      await c.query("COMMIT");
-
-      res.json({
-        ok: true
-      });
-    } catch (e) {
-      await c.query("ROLLBACK");
-      throw e;
-    } finally {
-      c.release();
+    } catch (error) {
+      next(error);
     }
-  } catch (e) {
-    next(e);
   }
-});
+);
 
 /*
   REBIRTH
 */
-app.post("/api/rebirth", auth, async (req, res, next) => {
-  try {
-    const c = await pool.connect();
-
+app.post(
+  "/api/rebirth",
+  auth,
+  async (req, res, next) => {
     try {
-      await c.query("BEGIN");
+      const client = await pool.connect();
 
-      await settle(req.player.id, c);
+      try {
+        await client.query("BEGIN");
 
-      const p = (
-        await c.query(
-          `SELECT *
-           FROM players
-           WHERE id = $1
-           FOR UPDATE`,
-          [req.player.id]
-        )
-      ).rows[0];
+        await settle(
+          req.player.id,
+          client
+        );
 
-      const need =
-        1000000 *
-        Math.pow(5, p.rebirths);
+        const playerResult =
+          await client.query(
+            `
+              SELECT *
+              FROM players
+              WHERE id = $1
+              FOR UPDATE
+            `,
+            [req.player.id]
+          );
 
-      if (Number(p.lifetime_cash) < need) {
-        return res.status(400).json({
-          error: `Need $${need.toLocaleString()} lifetime cash`
+        const player =
+          playerResult.rows[0];
+
+        const required =
+          1000000 *
+          Math.pow(
+            5,
+            player.rebirths
+          );
+
+        if (
+          Number(player.lifetime_cash) <
+          required
+        ) {
+          await client.query("ROLLBACK");
+
+          return res.status(400).json({
+            error:
+              `Need $${required.toLocaleString()} lifetime cash`
+          });
+        }
+
+        await client.query(
+          `
+            UPDATE players
+            SET cash = 500,
+                rebirths = rebirths + 1,
+                last_settled = now()
+            WHERE id = $1
+          `,
+          [player.id]
+        );
+
+        await client.query(
+          `
+            UPDATE businesses
+            SET level = 0,
+                employees = 0,
+                upgrade = 0
+            WHERE player_id = $1
+          `,
+          [player.id]
+        );
+
+        await client.query(
+          `
+            INSERT INTO ledger(
+              player_id,
+              kind,
+              amount
+            )
+            VALUES(
+              $1,
+              'rebirth',
+              0
+            )
+          `,
+          [player.id]
+        );
+
+        await client.query("COMMIT");
+
+        res.json({
+          ok: true
         });
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
       }
-
-      await c.query(
-        `UPDATE players
-         SET cash = 500,
-             rebirths = rebirths + 1,
-             last_settled = now()
-         WHERE id = $1`,
-        [p.id]
-      );
-
-      await c.query(
-        `UPDATE businesses
-         SET level = 0,
-             employees = 0,
-             upgrade = 0
-         WHERE player_id = $1`,
-        [p.id]
-      );
-
-      await c.query(
-        `INSERT INTO ledger(
-          player_id,
-          kind,
-          amount
-        )
-        VALUES($1, 'rebirth', 0)`,
-        [p.id]
-      );
-
-      await c.query("COMMIT");
-
-      res.json({
-        ok: true
-      });
-    } catch (e) {
-      await c.query("ROLLBACK");
-      throw e;
-    } finally {
-      c.release();
+    } catch (error) {
+      next(error);
     }
-  } catch (e) {
-    next(e);
   }
-});
+);
 
 /*
   LEADERBOARD
 */
-app.get("/api/leaderboard", async (req, res, next) => {
-  try {
-    const r = await pool.query(
-      `SELECT username, rebirths, lifetime_cash
-       FROM players
-       ORDER BY rebirths DESC,
-                lifetime_cash DESC
-       LIMIT 50`
-    );
+app.get(
+  "/api/leaderboard",
+  async (req, res, next) => {
+    try {
+      const result = await pool.query(
+        `
+          SELECT
+            username,
+            rebirths,
+            lifetime_cash
+          FROM players
+          ORDER BY
+            rebirths DESC,
+            lifetime_cash DESC
+          LIMIT 50
+        `
+      );
 
-    res.json(
-      r.rows.map((x, i) => ({
-        rank: i + 1,
-        username: x.username,
-        rebirths: x.rebirths,
-        lifetimeCash: Number(x.lifetime_cash)
-      }))
-    );
-  } catch (e) {
-    next(e);
+      res.json(
+        result.rows.map(
+          (player, index) => ({
+            rank: index + 1,
+            username: player.username,
+            rebirths: player.rebirths,
+            lifetimeCash:
+              Number(
+                player.lifetime_cash
+              )
+          })
+        )
+      );
+    } catch (error) {
+      next(error);
+    }
   }
-});
+);
 
 /*
   DAILY REWARD
+  ------------
+  IMPORTANT:
+  This is now protected by PostgreSQL.
+
+  A player can only successfully claim once
+  every 24 hours.
+
+  The player row is locked inside the transaction,
+  so two requests arriving at nearly the same time
+  cannot both receive the reward.
 */
-app.post("/api/reward/daily", auth, async (req, res, next) => {
-  try {
-    await settle(req.player.id);
+app.post(
+  "/api/reward/daily",
+  auth,
+  async (req, res, next) => {
+    const client = await pool.connect();
 
-    const reward =
-      1000 +
-      req.player.rebirths * 500;
+    try {
+      await client.query("BEGIN");
 
-    await pool.query(
-      `UPDATE players
-       SET cash = cash + $1,
-           lifetime_cash = lifetime_cash + $1
-       WHERE id = $2`,
-      [reward, req.player.id]
-    );
+      /*
+        settle() locks the player row with
+        SELECT ... FOR UPDATE.
+      */
+      await settle(
+        req.player.id,
+        client
+      );
 
-    await pool.query(
-      `INSERT INTO ledger(
-        player_id,
-        kind,
-        amount
-      )
-      VALUES($1, 'daily_reward', $2)`,
-      [req.player.id, reward]
-    );
+      const playerResult =
+        await client.query(
+          `
+            SELECT
+              id,
+              rebirths,
+              last_daily
+            FROM players
+            WHERE id = $1
+            FOR UPDATE
+          `,
+          [req.player.id]
+        );
 
-    res.json({
-      ok: true,
-      reward
-    });
-  } catch (e) {
-    next(e);
+      if (!playerResult.rowCount) {
+        await client.query("ROLLBACK");
+
+        return res.status(404).json({
+          error: "Player missing"
+        });
+      }
+
+      const player =
+        playerResult.rows[0];
+
+      const reward =
+        DAILY_BASE_REWARD +
+        Number(player.rebirths) *
+          DAILY_REBIRTH_BONUS;
+
+      /*
+        Calculate whether the player is eligible.
+      */
+      let nextClaimAt = null;
+
+      if (player.last_daily) {
+        const lastClaim =
+          new Date(
+            player.last_daily
+          ).getTime();
+
+        const nextClaimTime =
+          lastClaim +
+          DAILY_COOLDOWN_MS;
+
+        if (
+          Date.now() <
+          nextClaimTime
+        ) {
+          nextClaimAt =
+            new Date(
+              nextClaimTime
+            ).toISOString();
+
+          await client.query("ROLLBACK");
+
+          return res.status(429).json({
+            error:
+              "Daily reward already claimed",
+            nextClaimAt
+          });
+        }
+      }
+
+      /*
+        Record the claim and award the money
+        in the SAME transaction.
+      */
+      const updateResult =
+        await client.query(
+          `
+            UPDATE players
+            SET cash = cash + $1,
+                lifetime_cash = lifetime_cash + $1,
+                last_daily = now()
+            WHERE id = $2
+            RETURNING last_daily
+          `,
+          [
+            reward,
+            req.player.id
+          ]
+        );
+
+      if (!updateResult.rowCount) {
+        throw new Error(
+          "Daily reward update failed"
+        );
+      }
+
+      await client.query(
+        `
+          INSERT INTO ledger(
+            player_id,
+            kind,
+            amount
+          )
+          VALUES(
+            $1,
+            'daily_reward',
+            $2
+          )
+        `,
+        [
+          req.player.id,
+          reward
+        ]
+      );
+
+      await client.query("COMMIT");
+
+      nextClaimAt =
+        new Date(
+          Date.now() +
+          DAILY_COOLDOWN_MS
+        ).toISOString();
+
+      res.json({
+        ok: true,
+        reward,
+        nextClaimAt
+      });
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // Ignore rollback errors.
+      }
+
+      next(error);
+    } finally {
+      client.release();
+    }
   }
-});
+);
 
 /*
   SHOP
 */
-app.post("/api/shop/purchase", auth, async (req, res) => {
-  res.status(501).json({
-    error:
-      "Shop is payment-ready but no real payment processor is connected yet."
-  });
-});
+app.post(
+  "/api/shop/purchase",
+  auth,
+  async (req, res) => {
+    res.status(501).json({
+      error:
+        "Shop is payment-ready but no real payment processor is connected yet."
+    });
+  }
+);
 
 /*
   ADMIN STATUS
 */
-app.post("/api/admin/status", async (req, res) => {
-  if (
-    !ADMIN_SECRET ||
-    req.headers["x-admin-secret"] !== ADMIN_SECRET
-  ) {
-    return res.status(403).json({
-      error: "Forbidden"
-    });
+app.post(
+  "/api/admin/status",
+  async (req, res, next) => {
+    try {
+      if (
+        !ADMIN_SECRET ||
+        req.headers["x-admin-secret"] !==
+          ADMIN_SECRET
+      ) {
+        return res.status(403).json({
+          error: "Forbidden"
+        });
+      }
+
+      const result =
+        await pool.query(
+          `
+            SELECT
+              count(*) players,
+              coalesce(
+                sum(cash),
+                0
+              ) cash
+            FROM players
+          `
+        );
+
+      res.json(
+        result.rows[0]
+      );
+    } catch (error) {
+      next(error);
+    }
   }
-
-  const p = await pool.query(
-    `SELECT
-       count(*) players,
-       coalesce(sum(cash), 0) cash
-     FROM players`
-  );
-
-  res.json(p.rows[0]);
-});
+);
 
 /*
   ERROR HANDLER
 */
-app.use((e, req, res, next) => {
-  console.error(e);
+app.use(
+  (error, req, res, next) => {
+    console.error(error);
 
-  res.status(500).json({
-    error: "Server error"
-  });
-});
+    if (res.headersSent) {
+      return next(error);
+    }
+
+    res.status(500).json({
+      error: "Server error"
+    });
+  }
+);
 
 /*
   START SERVER
@@ -957,12 +1468,18 @@ init()
     app.listen(
       PORT,
       "0.0.0.0",
-      () => console.log(
-        `Hustle Empire listening on ${PORT}`
-      )
+      () => {
+        console.log(
+          `Hustle Empire listening on ${PORT}`
+        );
+      }
     );
   })
-  .catch((e) => {
-    console.error(e);
+  .catch((error) => {
+    console.error(
+      "Failed to start Hustle Empire:",
+      error
+    );
+
     process.exit(1);
   });
