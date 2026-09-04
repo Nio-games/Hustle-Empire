@@ -33,9 +33,35 @@ function showMessage(message, success = false) {
 }
 
 function showGame() {
-  $("auth").hidden = true;
-  $("game").hidden = false;
+  const auth = $("auth");
+  const game = $("game");
+
+  if (auth) {
+    auth.hidden = true;
+    auth.style.display = "none";
+  }
+
+  if (game) {
+    game.hidden = false;
+    game.style.display = "block";
+  }
+
   refresh();
+}
+
+function showAuth() {
+  const auth = $("auth");
+  const game = $("game");
+
+  if (auth) {
+    auth.hidden = false;
+    auth.style.display = "";
+  }
+
+  if (game) {
+    game.hidden = true;
+    game.style.display = "none";
+  }
 }
 
 function validateAccount(username, password) {
@@ -69,8 +95,16 @@ function validateAccount(username, password) {
 }
 
 async function register() {
-  const username = $("u").value.trim();
-  const password = $("p").value;
+  const usernameInput = $("u");
+  const passwordInput = $("p");
+  const button = $("authButton");
+
+  if (!usernameInput || !passwordInput || !button) {
+    return;
+  }
+
+  const username = usernameInput.value.trim();
+  const password = passwordInput.value;
 
   const validationError = validateAccount(username, password);
 
@@ -78,8 +112,6 @@ async function register() {
     showMessage(validationError);
     return;
   }
-
-  const button = $("authButton");
 
   try {
     button.disabled = true;
@@ -107,23 +139,26 @@ async function register() {
     showMessage(error.message || "Unable to create account.");
   } finally {
     button.disabled = false;
-
-    if (typeof authMode === "undefined" || authMode === "register") {
-      button.textContent = "Create Account";
-    }
+    button.textContent = "Create Account";
   }
 }
 
 async function login() {
-  const username = $("u").value.trim();
-  const password = $("p").value;
+  const usernameInput = $("u");
+  const passwordInput = $("p");
+  const button = $("authButton");
+
+  if (!usernameInput || !passwordInput || !button) {
+    return;
+  }
+
+  const username = usernameInput.value.trim();
+  const password = passwordInput.value;
 
   if (!username || !password) {
     showMessage("Enter your username and password.");
     return;
   }
-
-  const button = $("authButton");
 
   try {
     button.disabled = true;
@@ -149,17 +184,16 @@ async function login() {
     showMessage(error.message || "Unable to log in.");
   } finally {
     button.disabled = false;
-
-    if (typeof authMode === "undefined" || authMode === "login") {
-      button.textContent = "Log In";
-    }
+    button.textContent = "Log In";
   }
 }
 
 function logout() {
   localStorage.removeItem("he_token");
+
   token = null;
   state = null;
+
   location.reload();
 }
 
@@ -174,27 +208,34 @@ async function refresh() {
     localStorage.removeItem("he_token");
 
     token = null;
+    state = null;
 
-    $("auth").hidden = false;
-    $("game").hidden = true;
-
-    showMessage(error.message);
+    showAuth();
+    showMessage(error.message || "Your session expired.");
   }
 }
 
 function money(value) {
-  return "$" + Number(value).toLocaleString(undefined, {
+  return "$" + Number(value || 0).toLocaleString(undefined, {
     maximumFractionDigits: 0
   });
 }
 
 function escapeHtml(value) {
-  return String(value)
+  return String(value ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function setText(id, value) {
+  const element = $(id);
+
+  if (element) {
+    element.textContent = value;
+  }
 }
 
 function render() {
@@ -210,65 +251,71 @@ function render() {
     ? state.catalog
     : [];
 
-  $("cash").textContent = money(player.cash);
-  $("rate").textContent = money(player.perSec) + "/s";
-  $("rebirths").textContent = player.rebirths;
-  $("businessCount").textContent = businesses.length;
+  setText("playerName", player.username || "Player");
+  setText("cash", money(player.cash));
+  setText("lifetimeCash", money(player.lifetimeCash));
+  setText("rate", money(player.perSec) + "/s");
+  setText("rebirths", player.rebirths || 0);
+  setText("businessCount", businesses.length);
 
-  $("businesses").innerHTML = businesses.map((owned) => {
-    const business = catalog.find(
-      (item) => item.id === owned.business_id
-    );
+  const businessesElement = $("businesses");
 
-    if (!business) return "";
+  if (businessesElement) {
+    businessesElement.innerHTML = businesses.map((owned) => {
+      const business = catalog.find(
+        (item) => item.id === owned.business_id
+      );
 
-    const buyCost =
-      business.baseCost * Math.pow(1.15, owned.level);
+      if (!business) return "";
 
-    const upgradeCost =
-      business.baseCost * 2 * Math.pow(1.7, owned.upgrade);
+      const buyCost =
+        business.baseCost * Math.pow(1.15, owned.level);
 
-    const employeeCost =
-      business.baseCost * 0.75;
+      const upgradeCost =
+        business.baseCost * 2 * Math.pow(1.7, owned.upgrade);
 
-    return `
-      <article class="business-card">
+      const employeeCost =
+        business.baseCost * 0.75;
 
-        <div>
-          <h3>${escapeHtml(business.name)}</h3>
+      return `
+        <article class="business-card">
 
-          <small>
-            Level ${owned.level}
-            · Employees ${owned.employees}
-            · Upgrades ${owned.upgrade}
-          </small>
+          <div>
+            <h3>${escapeHtml(business.name)}</h3>
 
-          <br>
+            <small>
+              Level ${owned.level}
+              · Employees ${owned.employees}
+              · Upgrades ${owned.upgrade}
+            </small>
 
-          <small>
-            Base income ${money(business.income)}/s
-          </small>
-        </div>
+            <br>
 
-        <div class="business-actions">
+            <small>
+              Base income ${money(business.income)}/s
+            </small>
+          </div>
 
-          <button onclick="act('/api/business/buy','${business.id}')">
-            Buy ${money(buyCost)}
-          </button>
+          <div class="business-actions">
 
-          <button onclick="act('/api/business/upgrade','${business.id}')">
-            Upgrade ${money(upgradeCost)}
-          </button>
+            <button onclick="act('/api/business/buy','${business.id}')">
+              Buy ${money(buyCost)}
+            </button>
 
-          <button onclick="act('/api/business/employee','${business.id}')">
-            Hire ${money(employeeCost)}
-          </button>
+            <button onclick="act('/api/business/upgrade','${business.id}')">
+              Upgrade ${money(upgradeCost)}
+            </button>
 
-        </div>
+            <button onclick="act('/api/business/employee','${business.id}')">
+              Hire ${money(employeeCost)}
+            </button>
 
-      </article>
-    `;
-  }).join("");
+          </div>
+
+        </article>
+      `;
+    }).join("");
+  }
 }
 
 async function act(path, id) {
@@ -291,7 +338,9 @@ async function daily() {
   try {
     const data = await api(
       "/api/reward/daily",
-      { method: "POST" }
+      {
+        method: "POST"
+      }
     );
 
     alert("Reward: " + money(data.reward));
@@ -330,7 +379,13 @@ async function leaderboard() {
       ? data
       : [];
 
-    $("board").innerHTML = `
+    const board = $("board");
+
+    if (!board) {
+      return;
+    }
+
+    board.innerHTML = `
       <div class="leader-row leader-head">
         <div>#</div>
         <div>Player</div>
@@ -353,15 +408,9 @@ async function leaderboard() {
   }
 }
 
-if (token) {
-  showGame();
-}
-
-setInterval(() => {
-  if (token) {
-    refresh();
-  }
-}, 5000);
+/*
+  Make functions available to the HTML buttons.
+*/
 window.register = register;
 window.login = login;
 window.logout = logout;
@@ -369,3 +418,19 @@ window.act = act;
 window.daily = daily;
 window.rebirth = rebirth;
 window.leaderboard = leaderboard;
+
+/*
+  Restore an existing session.
+*/
+if (token) {
+  showGame();
+}
+
+/*
+  Keep the player's data fresh.
+*/
+setInterval(() => {
+  if (token) {
+    refresh();
+  }
+}, 5000);
