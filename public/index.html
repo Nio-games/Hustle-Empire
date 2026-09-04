@@ -3,156 +3,262 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#080808">
+  <meta name="theme-color" content="#080b12">
   <title>Hustle Empire</title>
   <link rel="stylesheet" href="/style.css">
 </head>
-
 <body>
-
+  <!-- AUTH SCREEN -->
   <section id="auth" class="auth-screen">
     <div class="auth-card">
-      <div class="logo">HUSTLE EMPIRE</div>
-      <div class="tagline">Build. Upgrade. Rebirth. Dominate.</div>
-
-      <div class="auth-tabs">
-        <button id="registerTab" class="active" type="button">
-          Create Account
-        </button>
-
-        <button id="loginTab" type="button">
-          Log In
-        </button>
+  <div class="logo">HUSTLE EMPIRE</div>
+  <div class="tagline">
+    Build. Upgrade. Rebirth. Dominate.
+  </div>
+  <div class="auth-tabs">
+    <button id="registerTab" class="active" type="button">
+      Create Account
+    </button>
+    <button id="loginTab" type="button">
+      Log In
+    </button>
+  </div>
+  <div class="field">
+    <label for="u">Username</label>
+    <input
+      id="u"
+      type="text"
+      autocomplete="username"
+      autocapitalize="none"
+      spellcheck="false"
+      maxlength="24"
+      placeholder="Enter username"
+    >
+  </div>
+  <div class="field">
+    <label for="p">Password</label>
+    <input
+      id="p"
+      type="password"
+      autocomplete="new-password"
+      minlength="8"
+      placeholder="Enter password"
+    >
+  </div>
+  <button id="authButton" class="primary-btn" type="button">
+    Create Account
+  </button>
+  <div id="msg" class="message"></div>
+  <div class="auth-help">
+    Username: 3–24 characters, letters, numbers, or _
+    <br>
+    Password: at least 8 characters
+  </div>
+</div>
+  </section>
+  <!-- GAME SCREEN -->
+  <section id="game" style="display:none;">
+<div class="app">
+  <!-- TOP BAR -->
+  <header class="topbar">
+    <div>
+      <div class="title">
+        HUSTLE EMPIRE
       </div>
-
-      <div class="field">
-        <label for="u">Username</label>
-        <input
-          id="u"
-          type="text"
-          autocomplete="username"
-          autocapitalize="none"
-          spellcheck="false"
-          maxlength="24"
-          placeholder="Enter username"
-        >
-      </div>
-
-      <div class="field">
-        <label for="p">Password</label>
-        <input
-          id="p"
-          type="password"
-          autocomplete="new-password"
-          minlength="8"
-          placeholder="Enter password"
-        >
-      </div>
-
-      <button id="authButton" class="primary-btn" type="button">
-        Create Account
-      </button>
-
-      <div id="msg" class="message"></div>
-
-      <div class="auth-help">
-        Username: 3–24 characters, letters, numbers, or _
-        <br>
-        Password: at least 8 characters
+      <div class="subtitle">
+        Boss:
+        <span id="playerName">Player</span>
       </div>
     </div>
-  </section>
-
-  <section id="game" style="display:none;">
-    <header class="game-header">
-      <div>
-        <div class="logo">HUSTLE EMPIRE</div>
-        <div id="playerName"></div>
-      </div>
-
-      <button id="logoutButton" type="button">
-        Log Out
-      </button>
-    </header>
-
-    <main id="gameContent">
-      <div class="game-card">
-        <h2>Your Empire</h2>
-
-        <div class="stats">
-          <div>
-            <span>Cash</span>
-            <strong id="cash">$500.00</strong>
-          </div>
-
-          <div>
-            <span>Lifetime Cash</span>
-            <strong id="lifetimeCash">$500.00</strong>
-          </div>
-
-          <div>
-            <span>Rebirths</span>
-            <strong id="rebirths">0</strong>
-          </div>
+    <button
+      id="logoutButton"
+      class="logout-btn"
+      type="button"
+    >
+      Log Out
+    </button>
+  </header>
+  <main id="gameContent">
+    <!-- STATS -->
+    <section class="stats">
+      <div class="stat">
+        <div class="stat-label">
+          Cash
         </div>
-
-        <button id="workButton" class="primary-btn" type="button">
-          Hustle
-        </button>
-
-        <div id="gameMsg" class="message"></div>
+        <div id="cash" class="stat-value">
+          $500
+        </div>
       </div>
-    </main>
+      <div class="stat">
+        <div class="stat-label">
+          Income
+        </div>
+        <div id="rate" class="stat-value">
+          $0/s
+        </div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">
+          Lifetime Cash
+        </div>
+        <div id="lifetimeCash" class="stat-value">
+          $500
+        </div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">
+          Rebirths
+        </div>
+        <div id="rebirths" class="stat-value">
+          0
+        </div>
+      </div>
+    </section>
+    <!-- EMPIRE ACTIONS -->
+    <section class="section">
+      <div class="section-title">
+        Empire Actions
+      </div>
+      <div class="action-panel">
+        <button
+          id="dailyButton"
+          class="action-btn"
+          type="button"
+        >
+          🎁 Daily Reward
+        </button>
+        <button
+          id="rebirthButton"
+          class="action-btn"
+          type="button"
+        >
+          ♻️ Rebirth
+        </button>
+        <button
+          id="leaderboardButton"
+          class="action-btn"
+          type="button"
+        >
+          🏆 Leaderboard
+        </button>
+      </div>
+      <div id="gameMsg" class="message"></div>
+    </section>
+    <!-- BUSINESSES -->
+    <section class="section">
+      <div class="section-title">
+        Your Businesses
+        <span class="subtitle">
+          (
+          <span id="businessCount">0</span>
+          )
+        </span>
+      </div>
+      <div
+        id="businesses"
+        class="business-grid"
+      ></div>
+    </section>
+    <!-- LEADERBOARD -->
+    <section class="section">
+      <div class="section-title">
+        Leaderboard
+      </div>
+      <div
+        id="board"
+        class="leaderboard"
+      >
+        <div class="leader-row leader-head">
+          <div>#</div>
+          <div>Player</div>
+          <div>Rebirths</div>
+          <div>Lifetime Cash</div>
+        </div>
+        <div class="leader-row">
+          <div>—</div>
+          <div>Tap Leaderboard to load</div>
+          <div>—</div>
+          <div>—</div>
+        </div>
+      </div>
+    </section>
+    <div class="footer">
+      Hustle Empire • Build your empire from the ground up.
+    </div>
+  </main>
+</div>
   </section>
-
   <script src="/app.js"></script>
-
   <script>
     document.addEventListener("DOMContentLoaded", function () {
-      const registerTab = document.getElementById("registerTab");
-      const loginTab = document.getElementById("loginTab");
-      const authButton = document.getElementById("authButton");
-
+      const registerTab =
+        document.getElementById("registerTab");
+      const loginTab =
+        document.getElementById("loginTab");
+      const authButton =
+        document.getElementById("authButton");
+      const password =
+        document.getElementById("p");
+      const message =
+        document.getElementById("msg");
       function setMode(mode) {
         const isLogin = mode === "login";
-
-        registerTab.classList.toggle("active", !isLogin);
-        loginTab.classList.toggle("active", isLogin);
-
-        authButton.textContent = isLogin
-          ? "Log In"
-          : "Create Account";
-
-        authButton.onclick = isLogin
-          ? window.login
-          : window.register;
-
-        const password = document.getElementById("p");
-
-        password.autocomplete = isLogin
-          ? "current-password"
-          : "new-password";
-
-        document.getElementById("msg").textContent = "";
+        registerTab.classList.toggle(
+          "active",
+          !isLogin
+        );
+        loginTab.classList.toggle(
+          "active",
+          isLogin
+        );
+        authButton.textContent =
+          isLogin
+            ? "Log In"
+            : "Create Account";
+        authButton.onclick =
+          isLogin
+            ? window.login
+            : window.register;
+        password.autocomplete =
+          isLogin
+            ? "current-password"
+            : "new-password";
+        message.textContent = "";
       }
-
-      registerTab.addEventListener("click", function () {
-        setMode("register");
-      });
-
-      loginTab.addEventListener("click", function () {
-        setMode("login");
-      });
-
-      document.getElementById("logoutButton").addEventListener("click", function () {
-        if (typeof window.logout === "function") {
-          window.logout();
-        }
-      });
-
+      registerTab.addEventListener(
+        "click",
+        () => setMode("register")
+      );
+      loginTab.addEventListener(
+        "click",
+        () => setMode("login")
+      );
+      document
+        .getElementById("logoutButton")
+        .addEventListener(
+          "click",
+          () => window.logout()
+        );
+      document
+        .getElementById("dailyButton")
+        .addEventListener(
+          "click",
+          () => window.daily()
+        );
+      document
+        .getElementById("rebirthButton")
+        .addEventListener(
+          "click",
+          () => window.rebirth()
+        );
+      document
+        .getElementById("leaderboardButton")
+        .addEventListener(
+          "click",
+          () => window.leaderboard()
+        );
       setMode("register");
     });
   </script>
-
 </body>
 </html>
