@@ -110,6 +110,11 @@ async function init() {
       amount NUMERIC(30,2) NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+
+    CREATE TABLE IF NOT EXISTS maintenance_flags(
+      name TEXT PRIMARY KEY,
+      completed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
   `);
 
   /*
@@ -186,6 +191,113 @@ async function init() {
   }
 
   console.log("Database initialization and migration complete");
+}
+
+/*
+  ONE-TIME TEST ACCOUNT CLEANUP
+  -----------------------------
+  Keeps ONLY hustleking123.
+
+  A maintenance flag prevents this from running
+  again on future server restarts.
+*/
+async function cleanupTestAccountsOnce() {
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const flagCheck = await client.query(
+      `
+        SELECT name
+        FROM maintenance_flags
+        WHERE name = 'initial_test_account_cleanup'
+        FOR UPDATE
+      `
+    );
+
+    if (flagCheck.rowCount) {
+      await client.query("COMMIT");
+
+      console.log(
+        "Initial test-account cleanup already completed."
+      );
+
+      return;
+    }
+
+    /*
+      Delete dependent records first.
+    */
+    await client.query(
+      `
+        DELETE FROM ledger
+        WHERE player_id IN (
+          SELECT id
+          FROM players
+          WHERE username <> 'hustleking123'
+        )
+      `
+    );
+
+    await client.query(
+      `
+        DELETE FROM sessions
+        WHERE player_id IN (
+          SELECT id
+          FROM players
+          WHERE username <> 'hustleking123'
+        )
+      `
+    );
+
+    await client.query(
+      `
+        DELETE FROM businesses
+        WHERE player_id IN (
+          SELECT id
+          FROM players
+          WHERE username <> 'hustleking123'
+        )
+      `
+    );
+
+    const deleted = await client.query(
+      `
+        DELETE FROM players
+        WHERE username <> 'hustleking123'
+      `
+    );
+
+    /*
+      Mark cleanup complete so future restarts
+      cannot delete newly-created players.
+    */
+    await client.query(
+      `
+        INSERT INTO maintenance_flags(name)
+        VALUES('initial_test_account_cleanup')
+        ON CONFLICT DO NOTHING
+      `
+    );
+
+    await client.query("COMMIT");
+
+    console.log(
+      `Initial test-account cleanup complete. Deleted ${deleted.rowCount} player account(s).`
+    );
+  } catch (error) {
+    await client.query("ROLLBACK");
+
+    console.error(
+      "Initial test-account cleanup failed:",
+      error
+    );
+
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /*
@@ -1427,23 +1539,6 @@ app.post(
 
 /*
   ADMIN CREATE
-  ------------
-  Creates an admin account.
-
-  This endpoint is protected by ADMIN_SECRET.
-  The secret is never stored in the database.
-
-  Request:
-    POST /api/admin/create
-
-  Header:
-    x-admin-secret: YOUR_ADMIN_SECRET
-
-  Body:
-    {
-      "username": "adminname",
-      "password": "strongpassword"
-    }
 */
 app.post(
   "/api/admin/create",
@@ -1505,11 +1600,6 @@ app.post(
 
         const player = result.rows[0];
 
-        /*
-          Give the admin the same business records
-          as a normal player so the account can still
-          enter and inspect the game.
-        */
         for (const business of BUSINESSES) {
           await client.query(
             `
@@ -1597,8 +1687,6 @@ app.post(
 
 /*
   ADMIN STATE
-  -----------
-  Optional protected endpoint for admin tools.
 */
 app.get(
   "/api/admin/state",
@@ -1669,6 +1757,7 @@ app.use(
   START SERVER
 */
 init()
+  .then(() => cleanupTestAccountsOnce())
   .then(() => {
     app.listen(
       PORT,
