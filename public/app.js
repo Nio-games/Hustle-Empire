@@ -362,3 +362,10 @@ setInterval(() => {
     refresh();
   }
 }, 5000);
+window.register = register;
+window.login = login;
+window.logout = logout;
+window.act = act;
+window.daily = daily;
+window.rebirth = rebirth;
+window.leaderboard = leaderboard;
